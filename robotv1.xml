@@ -1,5 +1,5 @@
 <mujoco model="robotv1_planar">
-  <compiler angle="degree" coordinate="local"/>
+  <compiler angle="radian" coordinate="local"/>
   <option timestep="0.001" integrator="RK4" solver="Newton" gravity="0 0 -9.81"/>
 
   <default>
@@ -13,7 +13,7 @@
     <quality shadowsize="2048"/>
     <headlight ambient="0.15 0.15 0.15" diffuse="0.6 0.6 0.6" specular="0.2 0.2 0.2"/>
     <rgba haze="1 1 1 1"/>
-    <global azimuth="120" elevation="-15"/>
+    <global azimuth="2.0943951024" elevation="-0.2617993878"/>
   </visual>
 
   <asset>
@@ -36,7 +36,7 @@
     <body name="torso" pos="0 0 0.4">
       <joint name="base_x" type="slide" axis="1 0 0" range="-2 2"/>
       <joint name="base_z" type="slide" axis="0 0 1" range="0 2"/>
-      <joint name="base_yaw" type="hinge" axis="0 1 0" range="-180 180"/>
+      <joint name="base_yaw" type="hinge" axis="0 1 0" range="-3.1415926536 3.1415926536"/>
 
       <inertial pos="0 0 0" mass="10" diaginertia="0.2 0.2 0.2"/>
       <geom name="torso_geom" type="box" pos="0 0 0.1" size="0.15 0.05 0.08"/>
@@ -47,7 +47,7 @@
 
       <!-- Upper leg: H -> K -->
       <body name="upper" pos="0 0 0">
-        <joint name="hip" type="hinge" axis="0 1 0" range="23.95 61.04"/>
+        <joint name="hip" type="hinge" axis="0 1 0" range="0.4180063559 1.0653489754"/>
         <inertial pos="0.18 0 0" mass="2" diaginertia="0.05 0.05 0.01"/>
 
         <site name="K" pos="0.39609 0 0" size="0.006" rgba="0 0 1 1"/>
@@ -56,7 +56,7 @@
 
         <!-- Lower leg: K -> W, with point C -->
         <body name="lower" pos="0.39609 0 0">
-          <joint name="knee" type="hinge" axis="0 1 0" range="-121.6 -41.73"/>
+          <joint name="knee" type="hinge" axis="0 1 0" range="-2.1223203704 -0.7283258969"/>
           <inertial pos="0.19 0 0" mass="1.5" diaginertia="0.03 0.03 0.008"/>
 
           <site name="W" pos="-0.37996 0 0" size="0.006" rgba="0.6 0.6 0.6 1"/>
@@ -67,7 +67,7 @@
 
           <body name="wheel" pos="-0.37996 0 0">
             <joint name="wheel" type="hinge" axis="0 1 0" range="-100000 100000"/>
-            <geom name="wheel_geom" type="cylinder" size="0.085 0.03" euler="90 0 0"
+            <geom name="wheel_geom" type="cylinder" size="0.085 0.03" euler="1.5707963268 0 0"
                   friction="2.0 0.2 0.02" condim="3"/>
           </body>
         </body>
@@ -75,7 +75,7 @@
 
       <!-- Rod link: Bc -> C -->
       <body name="rod" pos="0.09893 0 0.11576">
-        <joint name="bc" type="hinge" axis="0 1 0" range="-180 180"/>
+        <joint name="bc" type="hinge" axis="0 1 0" range="-3.1415926536 3.1415926536"/>
         <site name="rod_tip" pos="0.41762 0 0" size="0.006"/>
         <geom name="rod_capsule" type="capsule"
               fromto="0 0 0  0.41762 0 0" size="0.010"/>
@@ -90,12 +90,13 @@
   </equality>
 
   <actuator>
-    <motor name="act_hip" joint="hip" gear="60"/>
+    <position name="act_hip" joint="hip" kp="40" kv="2"
+              ctrllimited="true" ctrlrange="0.4180063559 1.0653489754"/>
     <motor name="act_wheel" joint="wheel" gear="25"/>
   </actuator>
 
   <keyframe>
     <!-- qpos order: base_x base_z base_yaw hip knee wheel bc -->
-    <key name="r0" qpos="0 0.37438 0  23.9507 -43.7348 0 -123.2482"/>
+    <key name="r0" qpos="0 0.37438 0  0.4180185732 -0.7633162577 0 -2.1510868872"/>
   </keyframe>
 </mujoco>
