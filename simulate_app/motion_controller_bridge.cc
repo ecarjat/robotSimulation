@@ -243,7 +243,7 @@ void init_lqr_params_defaults(lqr_params_t* out) {
   out->K[3] = LQR_K3_THETADOT;
   out->u_limit = LQR_U_LIMIT;
   out->du_limit = 0.0f;  // Disable rate limiting in simulation
-  out->theta_ref_limit = LQR_THETA_REF_LIMIT;
+  out->theta_ref_limit = 0.05f;  // 0.05 rad ≈ 3° — tighter than default to prevent divergence
   out->v_ref_limit = LQR_V_REF_LIMIT;
   out->engage_ramp_ms = 0;   // Skip PID→LQR ramp in simulation
   out->disengage_ramp_ms = 0;
