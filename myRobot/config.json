@@ -1,0 +1,49 @@
+{
+  "url": "https://cad.onshape.com/documents/6e8a915e9b82730078512f3c/w/f59c9b408c08fcde5add7934/e/9ec4716578ac9422c1d6f6fc",
+  "output_format": "mujoco",
+  "additional_xml": "keyframes.xml",
+  "assembly_name": "RobotAssembly",
+  "simplify_stls": true,
+  "freejoint": false,
+  "merge_stls": true,
+  "equalities": {
+    "*": {
+      "solref": "0.002 1",
+      "solimp": "0.95 0.99 0.001"
+    }
+  },
+  "joint_properties": {
+    "passive1": {
+      "actuated": false
+    },
+    "passive2": {
+      "actuated": false
+    },
+    "passive3": {
+      "actuated": false
+    },
+    "passive4": {
+      "actuated": false
+    },
+    "wheel_L": {
+      "type": "motor",
+      "ctrllimited": "true",
+      "ctrlrange=": "-3.7 3.7",
+      "forcerange": "-3.7 3.7"
+    },
+    "wheel_R": {
+      "type": "motor",
+      "ctrllimited": "true",
+      "ctrlrange=": "-3.7 3.7",
+      "forcerange": "-3.7 3.7"
+    },
+    "hip_L": {
+      "type": "position",
+      "gear": "25"
+    },
+    "hip_R": {
+      "type": "position",
+      "gear": "25"
+    }
+  }
+}
