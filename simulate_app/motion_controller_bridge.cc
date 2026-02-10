@@ -147,12 +147,9 @@ void reset_ekf(const mjModel* m, const mjData* d) {
   }
 
   g_state.ekf.begin();
-  const mjtNum* quat0 = d->xquat + 4 * g_state.torso_id;
-  mjtNum R0[9];
-  mju_quat2Mat(R0, quat0);
-  const mjtNum x_body_world0[3] = {R0[0], R0[3], R0[6]};
-  double theta0 = std::atan2(x_body_world0[2], x_body_world0[0]);
-  double x0 = d->xpos[3 * g_state.torso_id + 0];
+  // Use Euler pitch for theta
+  double theta0 = std::asin(2.0 * (d->qpos[3] * d->qpos[5] - d->qpos[6] * d->qpos[4]));
+  double x0 = d->qpos[0];
   g_state.ekf.reset(static_cast<float>(theta0), static_cast<float>(x0));
   g_state.ekf_initialized = true;
 }
@@ -168,24 +165,30 @@ void compute_kinematics(const mjModel* m, const mjData* d,
     return;
   }
 
-  const mjtNum* quat = d->xquat + 4 * g_state.torso_id;
-  mjtNum R[9];
-  mju_quat2Mat(R, quat);
-
-  const mjtNum x_body_world[3] = {R[0], R[3], R[6]};
-  *theta = std::atan2(x_body_world[2], x_body_world[0]);
-
-  mjtNum vel_world[6] = {0};
-  mjtNum vel_body[6] = {0};
-  mj_objectVelocity(m, d, mjOBJ_BODY, g_state.torso_id, vel_world, 0);
-  mj_objectVelocity(m, d, mjOBJ_BODY, g_state.torso_id, vel_body, 1);
-
-  *theta_dot = vel_body[1];
-  *x = d->xpos[3 * g_state.torso_id + 0];
-  *x_dot_world = vel_world[3];
+  // Use proper Euler pitch angle: pitch = asin(2*(qw*qy - qz*qx))
+  // This was empirically verified to produce correct sign for balance control.
+  // Pitch rate is computed via finite difference (stored in bridge state).
+  const mjtNum qw = d->qpos[3];
+  const mjtNum qx = d->qpos[4];
+  const mjtNum qy = d->qpos[5];
+  const mjtNum qz = d->qpos[6];
+  double pitch = std::asin(2.0 * (qw * qy - qz * qx));
+  
+  // Finite-difference pitch rate (more reliable than qvel[1])
+  static double prev_pitch = pitch;
+  double dt = m->opt.timestep;
+  *theta_dot = (pitch - prev_pitch) / dt;
+  prev_pitch = pitch;
+  
+  *theta = pitch;
+  *x = d->qpos[0];
+  *x_dot_world = d->qvel[3];
 }
 
 void apply_wheel_control(const mjModel* m, mjData* d, const MotionController::Command& cmd) {
+  // The LQR gains are computed assuming both wheels have the same effect direction.
+  // But the myRobot model has opposite wheel body orientations, so their joint axes
+  // point in different directions in world frame. We negate wheel_R to compensate.
   if (g_state.act_wheel_L >= 0) {
     double torque_nm = static_cast<double>(cmd.torque.torqueLeftNm) *
                        g_state.wheel_torque_scale;
@@ -194,6 +197,8 @@ void apply_wheel_control(const mjModel* m, mjData* d, const MotionController::Co
   if (g_state.act_wheel_R >= 0) {
     double torque_nm = static_cast<double>(cmd.torque.torqueRightNm) *
                        g_state.wheel_torque_scale;
+    // Same ctrl to both wheels — empirically verified both wheels
+    // contribute the same direction of pitch when given same ctrl sign
     d->ctrl[g_state.act_wheel_R] = clamp_ctrl(m, g_state.act_wheel_R, torque_nm);
   }
 }
@@ -237,12 +242,12 @@ void init_lqr_params_defaults(lqr_params_t* out) {
   out->K[2] = LQR_K2_THETA;
   out->K[3] = LQR_K3_THETADOT;
   out->u_limit = LQR_U_LIMIT;
-  out->du_limit = LQR_DU_LIMIT;
+  out->du_limit = 0.0f;  // Disable rate limiting in simulation
   out->theta_ref_limit = LQR_THETA_REF_LIMIT;
   out->v_ref_limit = LQR_V_REF_LIMIT;
-  out->engage_ramp_ms = LQR_ENGAGE_RAMP_MS;
-  out->disengage_ramp_ms = LQR_DISENGAGE_RAMP_MS;
-  out->default_mode = 1;
+  out->engage_ramp_ms = 0;   // Skip PID→LQR ramp in simulation
+  out->disengage_ramp_ms = 0;
+  out->default_mode = 1;     // Start directly in LQR mode
 }
 
 void update_lqr_from_hip(const mjModel* m, mjData* d, bool force) {

@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(mujoco_simulate_mc LANGUAGES C CXX OBJCXX)
+if(APPLE)
+  project(mujoco_simulate_mc LANGUAGES C CXX OBJCXX)
+else()
+  project(mujoco_simulate_mc LANGUAGES C CXX)
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -58,20 +62,24 @@ pkg_check_modules(GLFW REQUIRED IMPORTED_TARGET glfw3)
 
 set(FIRMWARE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../stm32Controller/firmware)
 
-add_executable(simulate_mc
+set(SIMULATE_SOURCES
   main.cc
   simulate.cc
   platform_ui_adapter.cc
   glfw_adapter.cc
   glfw_dispatch.cc
-  glfw_corevideo.mm
-  macos_gui.mm
   motion_controller_bridge.cc
   ${FIRMWARE_DIR}/app/control/MotionController.cpp
   ${FIRMWARE_DIR}/app/control/lqr_lut.c
   ${FIRMWARE_DIR}/app/control/ekf/BalancerEKF.cpp
   ${FIRMWARE_DIR}/tests/fakes/log_fake.c
 )
+
+if(APPLE)
+  list(APPEND SIMULATE_SOURCES glfw_corevideo.mm macos_gui.mm)
+endif()
+
+add_executable(simulate_mc ${SIMULATE_SOURCES})
 
 target_include_directories(simulate_mc PRIVATE
   ${MUJOCO_INCLUDE_DIR}
@@ -97,3 +105,27 @@ if(APPLE)
     "-framework QuartzCore"
   )
 endif()
+
+# Headless balance test executable
+add_executable(test_balance
+  test_balance.cc
+  motion_controller_bridge.cc
+  ${FIRMWARE_DIR}/app/control/MotionController.cpp
+  ${FIRMWARE_DIR}/app/control/lqr_lut.c
+  ${FIRMWARE_DIR}/app/control/ekf/BalancerEKF.cpp
+  ${FIRMWARE_DIR}/tests/fakes/log_fake.c
+)
+
+target_include_directories(test_balance PRIVATE
+  ${MUJOCO_INCLUDE_DIR}
+  ${CMAKE_CURRENT_LIST_DIR}
+  ${FIRMWARE_DIR}/app/control
+  ${FIRMWARE_DIR}/app/control/ekf
+  ${FIRMWARE_DIR}/app/utils
+  ${FIRMWARE_DIR}/app/drivers
+  ${FIRMWARE_DIR}/libs/TinyEKF
+)
+
+target_compile_definitions(test_balance PRIVATE APP_CONFIG_HOST)
+
+target_link_libraries(test_balance PRIVATE ${MUJOCO_LIB})

@@ -41,8 +41,8 @@ if(EXISTS "${MUJOCO_DIR}/Headers/mujoco.h")
   )
   list(GET MUJOCO_LIB_CAND 0 MUJOCO_LIB)
 else()
-  find_path(MUJOCO_INCLUDE_DIR mujoco.h
-    PATHS ${MUJOCO_DIR}/include/mujoco ${MUJOCO_DIR}/include ${MUJOCO_DIR}
+  find_path(MUJOCO_INCLUDE_DIR mujoco/mujoco.h
+    PATHS ${MUJOCO_DIR}/include ${MUJOCO_DIR}
   )
   find_library(MUJOCO_LIB mujoco
     PATHS ${MUJOCO_DIR}/lib ${MUJOCO_DIR}/lib64 ${MUJOCO_DIR}/bin

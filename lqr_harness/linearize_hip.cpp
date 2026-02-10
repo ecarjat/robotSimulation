@@ -379,11 +379,14 @@ int main(int argc, char** argv) {
         if (opt.reduced_out) {
             // Reduced state for MotionController: [x, xdot, theta, thetadot]
             // In mjd_transitionFD, the state is [qpos_tangent (nv), qvel (nv), act].
-            // For a free joint, qpos_tangent order is [rot x,y,z, trans x,y,z].
+            // For a free joint, mj_differentiatePos tangent order is:
+            //   [trans_x, trans_y, trans_z, rot_x, rot_y, rot_z]
+            // (translations FIRST, then rotations)
+            // qvel order matches: [trans_x, trans_y, trans_z, rot_x, rot_y, rot_z]
             const int free_id = joint_id(m, "torso_freejoint");
             const int base_dof = (free_id >= 0) ? m->jnt_dofadr[free_id] : 0;
-            const int idx_rot_y = base_dof + 1;
-            const int idx_trans_x = base_dof + 3;
+            const int idx_trans_x = base_dof + 0;  // forward position
+            const int idx_rot_y  = base_dof + 4;   // pitch angle (Y rotation)
             const int idx_x = idx_trans_x;
             const int idx_xdot = m->nv + idx_trans_x;
             const int idx_theta = idx_rot_y;
@@ -400,7 +403,7 @@ int main(int argc, char** argv) {
             // xdot
             C[1 * state_dim + idx_xdot] = 1.0;
             S[idx_xdot * 4 + 1] = 1.0;
-            // theta (small-angle pitch about Y)
+            // theta (pitch about Y — tangent[4] matches Euler pitch directly)
             C[2 * state_dim + idx_theta] = 1.0;
             S[idx_theta * 4 + 2] = 1.0;
             // thetadot
@@ -427,6 +430,8 @@ int main(int argc, char** argv) {
             }
 
             // Bbar = C * B * U, where U maps u_sum to wheel actuators.
+            // Both wheels receive same ctrl value (empirically verified they
+            // produce the same direction of pitch when given same ctrl sign).
             std::vector<mjtNum> Bbar(4, 0.0);
             int act_wheel_l = actuator_id(m, "wheel_L");
             int act_wheel_r = actuator_id(m, "wheel_R");
@@ -440,16 +445,9 @@ int main(int argc, char** argv) {
                 }
                 Bbar[r] = (mjtNum)sum;
             }
-            // Convert input from ctrl-units to torque (N·m) assuming motor actuators:
-            // tau = gear * ctrl  =>  ctrl = tau / gear  =>  B_tau = B_ctrl / gear.
-            if (act_wheel_l >= 0) {
-                mjtNum gear = m->actuator_gear[6 * act_wheel_l];
-                if (gear != 0) {
-                    for (int r = 0; r < 4; ++r) {
-                        Bbar[r] = (mjtNum)(Bbar[r] / gear);
-                    }
-                }
-            }
+            // NOTE: Bbar stays in ctrl-units (not converted to torque).
+            // The controller outputs ctrl directly (d->ctrl = u_sum),
+            // so LQR gains must be in ctrl-space, matching the MuJoCo B matrix.
 
             std::string ar_path = opt.out_dir + "/Ared_" + tag.str() + ".csv";
             std::string br_path = opt.out_dir + "/Bred_" + tag.str() + ".csv";
@@ -613,8 +611,8 @@ int main(int argc, char** argv) {
                     // Build linear mapping for 3-state: [v, theta, thetadot]
                     const int free_id = joint_id(m, "torso_freejoint");
                     const int base_dof = (free_id >= 0) ? m->jnt_dofadr[free_id] : 0;
-                    const int idx_rot_y = base_dof + 1;
-                    const int idx_trans_x = base_dof + 3;
+                    const int idx_trans_x = base_dof + 0;
+                    const int idx_rot_y  = base_dof + 4;  // pitch
                     const int idx_xdot = m->nv + idx_trans_x;
                     const int idx_theta = idx_rot_y;
                     const int idx_thetadot = m->nv + idx_rot_y;
@@ -626,7 +624,7 @@ int main(int argc, char** argv) {
                     C3[0 * state_dim + idx_xdot] = 1.0;
                     S3[idx_xdot * 3 + 0] = 1.0;
 
-                    // theta (small-angle pitch about Y)
+                    // theta (pitch — tangent[4] matches Euler pitch)
                     C3[1 * state_dim + idx_theta] = 1.0;
                     S3[idx_theta * 3 + 1] = 1.0;
 
@@ -665,14 +663,8 @@ int main(int argc, char** argv) {
                         }
                         B3[r] = (mjtNum)sum;
                     }
-                    if (act_wheel_l >= 0) {
-                        mjtNum gear = m->actuator_gear[6 * act_wheel_l];
-                        if (gear != 0) {
-                            for (int r = 0; r < 3; ++r) {
-                                B3[r] = (mjtNum)(B3[r] / gear);
-                            }
-                        }
-                    }
+                    // NOTE: mjd_transitionFD B matrix is already in ctrl-space,
+                    // so NO gear division needed here.
 
                     write_matrix_csv(ar3_path, A3.data(), 3, 3);
                     write_matrix_csv(br3_path, B3.data(), 3, 1);
