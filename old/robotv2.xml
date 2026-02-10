@@ -1,0 +1,183 @@
+<mujoco model="robotv2_3d">
+  <compiler angle="radian" coordinate="local"/>
+  <option timestep="0.001" integrator="RK4" solver="Newton" gravity="0 0 -9.81"/>
+
+  <default>
+    <joint damping="1.0" armature="0.01" limited="true"/>
+    <geom contype="1" conaffinity="1" density="500"
+          friction="2.0 0.2 0.02" solref="0.01 1" solimp="0.95 0.99 0.001"/>
+    <motor ctrlrange="-1 1" ctrllimited="true"/>
+  </default>
+
+  <visual>
+    <quality shadowsize="2048"/>
+    <headlight ambient="0.15 0.15 0.15" diffuse="0.6 0.6 0.6" specular="0.2 0.2 0.2"/>
+    <rgba haze="1 1 1 1"/>
+    <global azimuth="2.0943951024" elevation="-0.2617993878"/>
+  </visual>
+
+  <asset>
+    <texture name="floor_tex" type="2d" builtin="checker"
+             rgb1="0.92 0.92 0.92" rgb2="0.78 0.78 0.78"
+             width="512" height="512"/>
+    <material name="floor_mat" texture="floor_tex" texrepeat="6 6"
+              reflectance="0.15" shininess="0.8" specular="0.2"/>
+  </asset>
+
+  <worldbody>
+    <geom name="ground" type="plane" pos="0 0 0" size="5 5 0.1" material="floor_mat"
+          friction="2.0 0.2 0.02" condim="3"/>
+
+    <!-- Simple bounding walls (10m x 10m arena) -->
+    <geom name="wall_pos_x" type="box" pos="5.0 0 0.5" size="0.05 5.0 0.5"/>
+    <geom name="wall_neg_x" type="box" pos="-5.0 0 0.5" size="0.05 5.0 0.5"/>
+    <geom name="wall_pos_y" type="box" pos="0 5.0 0.5" size="5.0 0.05 0.5"/>
+    <geom name="wall_neg_y" type="box" pos="0 -5.0 0.5" size="5.0 0.05 0.5"/>
+
+    <!-- Studio lights -->
+    <light name="key" pos="2 2 2.5" dir="-1 -1 -1" diffuse="0.9 0.9 0.9" specular="0.2 0.2 0.2"/>
+    <light name="fill" pos="-2 1 1.5" dir="1 -0.5 -0.5" diffuse="0.4 0.4 0.4" specular="0 0 0"/>
+
+    <!-- Full 3D floating base -->
+    <body name="torso" pos="0 0 0.4">
+      <joint name="base" type="free"/>
+
+      <!-- Split torso into left/right boxes (rigidly attached to torso) -->
+      <body name="torso_L" pos="0 0.095066 0">
+        <inertial pos="-0.003391 -0.040604 0.008307" mass="1.284957" fullinertia="0.003761 0.006524 0.005182 0.000051 -0.002014 0.000004"/>
+        <geom name="torso_geom_L" type="box" pos="0 0 0.09913"
+              size="0.1402955 0.045066 0.09913"/>
+      </body>
+
+      <body name="torso_R" pos="0 -0.095066 0">
+        <inertial pos="-0.003614 -0.059666 0.008323" mass="1.278354" fullinertia="0.003737 0.006513 0.005158 -0.000056 -0.002015 0.000003"/>
+        <geom name="torso_geom_R" type="box" pos="0 0 0.09913"
+              size="0.1402955 0.045066 0.09913"/>
+      </body>
+
+      <!-- Battery (centered between torso halves) -->
+      <body name="battery" pos="0 0 0">
+        <inertial pos="0.021501 0.053751 0.034684" mass="1.300646" fullinertia="0.003118 0.001480 0.003267 0.000000 -0.000000 -0.000000"/>
+        <geom name="battery_geom" type="box" pos="0 0 0.09913"
+              size="0.08 0.04 0.03" rgba="0.15 0.15 0.15 1"/>
+      </body>
+
+      <!-- Reference sites (track width = 0.280 m, CAD source of truth) -->
+      <site name="H_L"  pos="0.00000  0.14000 0.00000" size="0.006" rgba="0 0 0 1"/>
+      <site name="H_R"  pos="0.00000 -0.14000 0.00000" size="0.006" rgba="0 0 0 1"/>
+      <site name="Bc_L" pos="0.09893  0.14000 0.11576" size="0.006" rgba="1 0 0 1"/>
+      <site name="Bc_R" pos="0.09893 -0.14000 0.11576" size="0.006" rgba="1 0 0 1"/>
+      <site name="imu" pos="0 0 0.12" size="0.006"/>
+
+      <!-- Left linkage (Y+): H_L -> K_L -> W_L / C_L -->
+      <body name="left_leg" pos="0 0.140 0">
+        <body name="upper_L" pos="0 0 0">
+          <joint name="hip_L" type="hinge" axis="0 1 0" range="0.4180063559 1.0653489754"/>
+          <inertial pos="0.169752 -0.040285 -0.141881" mass="0.314212" fullinertia="0.003236 0.006156 0.004306 -0.000180 0.002982 0.000147"/>
+
+          <site name="K_L" pos="0.39609 0 0" size="0.006" rgba="0 0 1 1"/>
+          <geom name="upper_capsule_L" type="capsule"
+                fromto="0 0 0  0.39609 0 0" size="0.016"/>
+
+          <body name="lower_L" pos="0.39609 0 0">
+            <joint name="knee_L" type="hinge" axis="0 1 0" range="-2.1223203704 -0.7283258969"/>
+            <inertial pos="0.216786 -0.033851 -0.317681" mass="0.976380" fullinertia="0.010797 0.026113 0.018611 -0.002970 -0.012002 -0.002149"/>
+
+            <site name="W_L" pos="-0.37996 0 0" size="0.006" rgba="0.6 0.6 0.6 1"/>
+            <site name="C_L" pos="0.07506 0 0" size="0.006" rgba="0 1 0 1"/>
+
+            <geom name="lower_capsule_L" type="capsule"
+                  fromto="-0.37996 0 0  0.07506 0 0" size="0.016"/>
+
+            <body name="wheel_L" pos="-0.37996 0 0">
+              <joint name="wheel_L" type="hinge" axis="0 1 0" range="-100000 100000"/>
+              <inertial pos="-0.005660 0.043267 -0.476216" mass="0.747917" fullinertia="0.001480 0.001737 0.001480 0.000000 -0.000000 0.000001"/>
+              <geom name="wheel_geom_L" type="cylinder" size="0.085 0.03" euler="1.5707963268 0 0"
+                    friction="2.0 0.2 0.02" condim="3"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- Rod link: Bc_L -> C_L -->
+      <body name="rod_L" pos="0.09893 0.140 0.11576">
+        <joint name="bc_L" type="hinge" axis="0 1 0" range="-3.1415926536 3.1415926536"/>
+        <inertial pos="0.229129 -0.045290 -0.047488" mass="0.226234" fullinertia="0.005564 0.008976 0.003577 -0.000000 0.004355 0.000000"/>
+
+        <site name="rod_tip_L" pos="0.41762 0 0" size="0.006"/>
+        <geom name="rod_capsule_L" type="capsule"
+              fromto="0 0 0  0.41762 0 0" size="0.010"/>
+      </body>
+
+      <!-- Right linkage (Y-): H_R -> K_R -> W_R / C_R -->
+      <body name="right_leg" pos="0 -0.140 0">
+        <body name="upper_R" pos="0 0 0">
+          <joint name="hip_R" type="hinge" axis="0 1 0" range="0.4180063559 1.0653489754"/>
+          <inertial pos="0.170871 -0.239215 -0.140529" mass="0.314212" fullinertia="0.003178 0.006156 0.004350 0.000182 0.002973 -0.000146"/>
+
+          <site name="K_R" pos="0.39609 0 0" size="0.006" rgba="0 0 1 1"/>
+          <geom name="upper_capsule_R" type="capsule"
+                fromto="0 0 0  0.39609 0 0" size="0.016"/>
+
+          <body name="lower_R" pos="0.39609 0 0">
+            <joint name="knee_R" type="hinge" axis="0 1 0" range="-2.1223203704 -0.7283258969"/>
+            <inertial pos="0.330666 -0.397670 0.093158" mass="0.978726" fullinertia="0.010936 0.026530 0.018854 0.002965 -0.012196 0.002132"/>
+
+            <site name="W_R" pos="-0.37996 0 0" size="0.006" rgba="0.6 0.6 0.6 1"/>
+            <site name="C_R" pos="0.07506 0 0" size="0.006" rgba="0 1 0 1"/>
+
+            <geom name="lower_capsule_R" type="capsule"
+                  fromto="-0.37996 0 0  0.07506 0 0" size="0.016"/>
+
+            <body name="wheel_R" pos="-0.37996 0 0">
+              <joint name="wheel_R" type="hinge" axis="0 1 0" range="-100000 100000"/>
+              <inertial pos="-0.007907 -0.322764 -0.472557" mass="0.747917" fullinertia="0.001446 0.001737 0.001446 0.000000 -0.000000 0.000001"/>
+              <geom name="wheel_geom_R" type="cylinder" size="0.085 0.03" euler="1.5707963268 0 0"
+                    friction="2.0 0.2 0.02" condim="3"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- Rod link: Bc_R -> C_R -->
+      <body name="rod_R" pos="0.09893 -0.140 0.11576">
+        <joint name="bc_R" type="hinge" axis="0 1 0" range="-3.1415926536 3.1415926536"/>
+        <inertial pos="0.230413 -0.235300 -0.046455" mass="0.226234" fullinertia="0.005496 0.008976 0.003646 0.000000 0.004371 -0.000000"/>
+        <site name="rod_tip_R" pos="0.41762 0 0" size="0.006"/>
+        <geom name="rod_capsule_R" type="capsule"
+              fromto="0 0 0  0.41762 0 0" size="0.010"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- Close the loops: rod tips coincide with C points on lower legs -->
+  <equality>
+    <connect name="loop_BcC_L" site1="rod_tip_L" site2="C_L"
+             solref="0.002 1" solimp="0.95 0.99 0.001"/>
+    <connect name="loop_BcC_R" site1="rod_tip_R" site2="C_R"
+             solref="0.002 1" solimp="0.95 0.99 0.001"/>
+  </equality>
+
+  <actuator>
+    <position name="act_hip_L" joint="hip_L" kp="1000" kv="2"
+              ctrllimited="true" ctrlrange="0.4180063559 1.0653489754"/>
+    <motor name="act_wheel_L" joint="wheel_L" gear="-1"
+           ctrllimited="true" ctrlrange="-20 20"/>
+    <position name="act_hip_R" joint="hip_R" kp="1000" kv="2"
+              ctrllimited="true" ctrlrange="0.4180063559 1.0653489754"/>
+    <motor name="act_wheel_R" joint="wheel_R" gear="-1"
+           ctrllimited="true" ctrlrange="-20 20"/>
+  </actuator>
+
+  <sensor>
+    <gyro name="gyro" site="imu"/>
+    <accelerometer name="acc" site="imu"/>
+  </sensor>
+
+  <keyframe>
+    <!-- qpos order: base (7) hip_L knee_L wheel_L bc_L hip_R knee_R wheel_R bc_R -->
+    <key name="r0"
+         qpos="0 0 0.621  1 0 0 0  0.777 -1.52 0 0.961  0.777 -1.52 0 0.961"
+         ctrl="0.777 0 0.777 0"/>
+  </keyframe>
+</mujoco>
