@@ -182,7 +182,7 @@ void compute_kinematics(const mjModel* m, const mjData* d,
   
   *theta = pitch;
   *x = d->qpos[0];
-  *x_dot_world = d->qvel[3];
+  *x_dot_world = d->qvel[0];  /* vx (linear), NOT qvel[3] which is wx (angular) */
 }
 
 void apply_wheel_control(const mjModel* m, mjData* d, const MotionController::Command& cmd) {
@@ -276,9 +276,12 @@ void update_lqr_from_hip(const mjModel* m, mjData* d, bool force) {
     init_lqr_params_defaults(&g_state.lqr_params);
     g_state.lqr_params_valid = true;
   }
-  for (int i = 0; i < 4; ++i) {
-    g_state.lqr_params.K[i] = K[i];
-  }
+  /* TODO: LUT gains were tuned for direct 4-state architecture with different
+   * sign conventions. Skip ALL gain overrides until LUT is regenerated for
+   * cascaded architecture. Only use theta_eq and u_eq from LUT. */
+  /* for (int i = 0; i < 4; ++i) {
+       g_state.lqr_params.K[i] = K[i];
+     } */
   g_state.controller.setLqrParams(g_state.lqr_params);
   g_state.controller.setLqrEquilibrium(theta_eq, u_eq);
   g_state.lqr_theta_eq = theta_eq;
