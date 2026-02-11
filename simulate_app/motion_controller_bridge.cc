@@ -243,7 +243,7 @@ void init_lqr_params_defaults(lqr_params_t* out) {
   out->K[3] = LQR_K3_THETADOT;
   out->u_limit = LQR_U_LIMIT;
   out->du_limit = 0.0f;  // Disable rate limiting in simulation
-  out->theta_ref_limit = 0.05f;  // 0.05 rad ≈ 3° — tighter than default to prevent divergence
+  out->theta_ref_limit = 0.20f;  // 0.20 rad ≈ 11.5° — allow full theta_eq range from LUT
   out->v_ref_limit = LQR_V_REF_LIMIT;
   out->engage_ramp_ms = 0;   // Skip PID→LQR ramp in simulation
   out->disengage_ramp_ms = 0;
@@ -276,12 +276,10 @@ void update_lqr_from_hip(const mjModel* m, mjData* d, bool force) {
     init_lqr_params_defaults(&g_state.lqr_params);
     g_state.lqr_params_valid = true;
   }
-  /* TODO: LUT gains were tuned for direct 4-state architecture with different
-   * sign conventions. Skip ALL gain overrides until LUT is regenerated for
-   * cascaded architecture. Only use theta_eq and u_eq from LUT. */
-  /* for (int i = 0; i < 4; ++i) {
-       g_state.lqr_params.K[i] = K[i];
-     } */
+  /* LUT gains regenerated from sysid 2026-02-11 */
+  for (int i = 0; i < 4; ++i) {
+    g_state.lqr_params.K[i] = K[i];
+  }
   g_state.controller.setLqrParams(g_state.lqr_params);
   g_state.controller.setLqrEquilibrium(theta_eq, u_eq);
   g_state.lqr_theta_eq = theta_eq;

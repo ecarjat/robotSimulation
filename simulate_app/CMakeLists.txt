@@ -129,3 +129,49 @@ target_include_directories(test_balance PRIVATE
 target_compile_definitions(test_balance PRIVATE APP_CONFIG_HOST)
 
 target_link_libraries(test_balance PRIVATE ${MUJOCO_LIB})
+
+# System identification test
+add_executable(sysid_test sysid_test.cc)
+target_include_directories(sysid_test PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(sysid_test PRIVATE ${MUJOCO_LIB})
+
+# Full state-space system identification
+add_executable(sysid_full sysid_full.cc)
+target_include_directories(sysid_full PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(sysid_full PRIVATE ${MUJOCO_LIB})
+
+# Clean sysid using qacc
+add_executable(sysid_clean sysid_clean.cc)
+target_include_directories(sysid_clean PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(sysid_clean PRIVATE ${MUJOCO_LIB})
+
+# MuJoCo linearization
+add_executable(sysid_mujoco sysid_mujoco.cc)
+target_include_directories(sysid_mujoco PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(sysid_mujoco PRIVATE ${MUJOCO_LIB})
+
+# Simple empirical sysid
+add_executable(sysid_simple sysid_simple.cc)
+target_include_directories(sysid_simple PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(sysid_simple PRIVATE ${MUJOCO_LIB})
+
+# Fast sysid (first 20ms)
+add_executable(sysid_fast sysid_fast.cc)
+target_include_directories(sysid_fast PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(sysid_fast PRIVATE ${MUJOCO_LIB})
+
+# Sysid for LUT generation (all hip positions)
+add_executable(sysid_lut sysid_lut.cc)
+target_include_directories(sysid_lut PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(sysid_lut PRIVATE ${MUJOCO_LIB})
+
+# Closed-loop sysid for LUT
+add_executable(sysid_lut2 sysid_lut2.cc)
+target_include_directories(sysid_lut2 PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(sysid_lut2 PRIVATE ${MUJOCO_LIB})
+add_executable(measure_eq measure_eq.cc)
+target_include_directories(measure_eq PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(measure_eq PRIVATE ${MUJOCO_LIB})
+add_executable(find_eq find_eq.cc)
+target_include_directories(find_eq PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(find_eq PRIVATE ${MUJOCO_LIB})
