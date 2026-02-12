@@ -11,7 +11,13 @@
         <geom type="mesh" contype="0" conaffinity="0" group="2"/>
       </default>
       <default class="collision">
-        <geom group="3"/>
+        <geom group="3" margin="0.002"/>
+      </default>
+      <default class="wheel_contact">
+        <geom type="cylinder" group="3" size="0.08547 0.03"
+          friction="1.2 0.03 0.001" condim="4"
+          solref="0.03 2" solimp="0.90 0.95 0.001 0.5 2"
+          priority="1"/>
       </default>
     </default>
   </default>
@@ -60,7 +66,8 @@
             <inertial pos="1.9497e-08 1.8198e-08 -0.0360202" mass="0.428" fullinertia="0.00138082 0.00138082 0.00195297 -9.13e-10 -3.2076e-08 -4.525e-09"/>
             <!-- Part wheel_geom_parts -->
             <geom type="mesh" class="visual" pos="1.9497e-08 1.8198e-08 -0.0360202" quat="0.63422 -0.63422 -0.312674 0.312674" mesh="wheel_geom_visual" material="wheel_geom_visual_material"/>
-            <geom type="mesh" class="collision" pos="1.9497e-08 1.8198e-08 -0.0360202" quat="0.63422 -0.63422 -0.312674 0.312674" mesh="wheel_geom_collision" material="wheel_geom_collision_material"/>
+            <geom type="mesh" class="collision" pos="1.9497e-08 1.8198e-08 -0.0360202" quat="0.63422 -0.63422 -0.312674 0.312674" mesh="wheel_geom_collision" material="wheel_geom_collision_material" contype="0" conaffinity="0"/>
+            <geom name="wheel_contact_L" class="wheel_contact" pos="0 0 0"/>
             <!-- Frame W_L -->
             <site group="3" name="W_L" pos="0 0 0" quat="1 -0 0 -0"/>
           </body>
@@ -102,7 +109,8 @@
             <inertial pos="1.9497e-08 -1.8198e-08 0.0360202" mass="0.428" fullinertia="0.00138082 0.00138082 0.00195297 9.13e-10 3.2076e-08 -4.525e-09"/>
             <!-- Part wheel_geom_2_parts -->
             <geom type="mesh" class="visual" pos="1.9497e-08 -1.8198e-08 0.0360202" quat="0.630088 -0.630088 -0.32092 0.32092" mesh="wheel_geom_2_visual" material="wheel_geom_2_visual_material"/>
-            <geom type="mesh" class="collision" pos="1.9497e-08 -1.8198e-08 0.0360202" quat="0.630088 -0.630088 -0.32092 0.32092" mesh="wheel_geom_2_collision" material="wheel_geom_2_collision_material"/>
+            <geom type="mesh" class="collision" pos="1.9497e-08 -1.8198e-08 0.0360202" quat="0.630088 -0.630088 -0.32092 0.32092" mesh="wheel_geom_2_collision" material="wheel_geom_2_collision_material" contype="0" conaffinity="0"/>
+            <geom name="wheel_contact_R" class="wheel_contact" pos="0 0 0"/>
             <!-- Frame W_R -->
             <site group="3" name="W_R" pos="0 0 0" quat="0 1 0 0"/>
           </body>
