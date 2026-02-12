@@ -15,4 +15,8 @@ bool MotionControllerToggle();
 // Returns whether the controller is currently enabled.
 bool MotionControllerIsEnabled();
 
+// Step hip targets to the next LUT angle. Positive direction moves up, negative moves down.
+// Returns true if the target changed.
+bool MotionControllerStepHipTarget(int direction);
+
 #endif  // MOTION_CONTROLLER_BRIDGE_H_

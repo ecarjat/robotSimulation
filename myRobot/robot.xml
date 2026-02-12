@@ -35,6 +35,8 @@
       <site group="3" name="closing_hip_R_1" pos="0.09893 0.205 0.11576" quat="0.707107 -0.707107 0 0"/>
       <!-- Frame closing_hip_R_1_z -->
       <site group="3" name="closing_hip_R_1_z" pos="0.09893 0.305 0.11576" quat="0.707107 -0.707107 0 0"/>
+      <!-- IMU mounting site for simulated sensors -->
+      <site group="3" name="imu" pos="0 0 0" quat="1 0 0 0"/>
       <!-- Link upperlegouterassembly -->
       <body name="upperlegouterassembly" pos="-0 0 0" quat="0.301439 -0.301439 0.639636 0.639636">
         <!-- Joint from torso to upperlegouterassembly -->
@@ -160,11 +162,15 @@
     <material name="linkassembly_2_collision_material" rgba="0.37621 0.311382 0.528221 1"/>
   </asset>
   <actuator>
-    <position class="myRobot" name="hip_L" joint="hip_L" inheritrange="1" gear="25"/>
+    <position class="myRobot" name="hip_L" joint="hip_L" inheritrange="1" gear="5"/>
     <motor class="myRobot" name="wheel_L" joint="wheel_L" gear="-1"/>
-    <position class="myRobot" name="hip_R" joint="hip_R" inheritrange="1" gear="25"/>
+    <position class="myRobot" name="hip_R" joint="hip_R" inheritrange="1" gear="5"/>
     <motor class="myRobot" name="wheel_R" joint="wheel_R"  gear="-1"/>
   </actuator>
+  <sensor>
+    <gyro name="gyro" site="imu"/>
+    <accelerometer name="acc" site="imu"/>
+  </sensor>
   <equality>
     <connect site1="closing_hip_L_1" site2="closing_hip_L_2" solref="0.002 1" solimp="0.95 0.99 0.001"/>
     <connect site1="closing_hip_L_1_z" site2="closing_hip_L_2_z" solref="0.002 1" solimp="0.95 0.99 0.001"/>

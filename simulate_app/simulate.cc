@@ -1798,6 +1798,16 @@ void UiEvent(mjuiState* state) {
       MotionControllerToggle();
       break;
 
+    case 'i':                   // raise hips to next LUT angle
+    case 'I':
+      MotionControllerStepHipTarget(+1);
+      break;
+
+    case 'k':                   // lower hips to previous LUT angle
+    case 'K':
+      MotionControllerStepHipTarget(-1);
+      break;
+
     case mjKEY_TAB:             // toggle left/right UI
       if (!state->shift) {
         // toggle left UI

@@ -2,12 +2,15 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <cstdio>
 
 #include "MotionController.h"
 #include "StateEstimate.h"
 #include "ekf/BalancerEKF.h"
 #include "lqr_lut.h"
+#include "lqr_lut_data.h"
 
 namespace {
 struct ControllerState {
@@ -51,6 +54,7 @@ struct ControllerState {
   double hip_kp = 50.0;
   double hip_kd = 2.0;
   double wheel_torque_scale = 1.0;
+  double v_enc_scale = 1.0;
   bool hold_hips = true;
   bool use_ekf = true;
   bool hip_target_mid = true;
@@ -68,6 +72,29 @@ ControllerState g_state;
 
 int find_id(const mjModel* m, int type, const char* name) {
   return mj_name2id(m, type, name);
+}
+
+bool env_var_false(const char* name) {
+  const char* v = std::getenv(name);
+  if (!v) {
+    return false;
+  }
+  return !std::strcmp(v, "0") || !std::strcmp(v, "false") ||
+         !std::strcmp(v, "FALSE") || !std::strcmp(v, "off") ||
+         !std::strcmp(v, "OFF");
+}
+
+double env_var_double(const char* name, double fallback) {
+  const char* v = std::getenv(name);
+  if (!v || !*v) {
+    return fallback;
+  }
+  char* end = nullptr;
+  const double parsed = std::strtod(v, &end);
+  if (end == v) {
+    return fallback;
+  }
+  return parsed;
 }
 
 double clamp_ctrl(const mjModel* m, int act_id, double u) {
@@ -115,6 +142,19 @@ bool is_servo_actuator(const mjModel* m, int act_id) {
     return false;
   }
   return m->actuator_biastype[act_id] != mjBIAS_NONE;
+}
+
+int nearest_hip_lut_index(double hip_rad) {
+  int best = 0;
+  double best_err = std::fabs(hip_rad - static_cast<double>(kHipLut[0]));
+  for (int i = 1; i < LQR_LUT_SIZE; ++i) {
+    const double err = std::fabs(hip_rad - static_cast<double>(kHipLut[i]));
+    if (err < best_err) {
+      best = i;
+      best_err = err;
+    }
+  }
+  return best;
 }
 
 void update_wheel_geometry(const mjModel* m, const mjData* d) {
@@ -297,6 +337,8 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   g_state.model = m;
   g_state.model_ready = false;
   g_state.last_time = d->time;
+  g_state.use_ekf = !env_var_false("SIM_USE_EKF");
+  g_state.v_enc_scale = env_var_double("SIM_VENC_SCALE", 1.0);
 
   g_state.torso_id = find_id(m, mjOBJ_BODY, "torso");
   g_state.act_wheel_L = find_id(m, mjOBJ_ACTUATOR, "wheel_L");
@@ -344,12 +386,30 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   }
 
   g_state.controller.setControlDt(static_cast<float>(m->opt.timestep));
+  balance_gains_t gains{};
+  gains.Kp_theta = BALANCE_DEFAULT_KP_THETA;
+  gains.Kd_theta = BALANCE_DEFAULT_KD_THETA;
+  gains.Kp_v_to_theta = BALANCE_DEFAULT_KP_V_TO_THETA;
+  gains.Ki_v_to_theta = BALANCE_DEFAULT_KI_V_TO_THETA;
+  gains.max_tilt_ref = BALANCE_DEFAULT_MAX_TILT_REF;
+  gains.Kv_damp = BALANCE_DEFAULT_KV_DAMP;
+  gains.K_turn = BALANCE_DEFAULT_K_TURN;
+  gains.K_yawDamp = BALANCE_DEFAULT_K_YAW_DAMP;
+  gains.alpha_yaw = BALANCE_DEFAULT_ALPHA_YAW;
+  gains.IqMax = BALANCE_DEFAULT_IQ_MAX;
+  gains.thetaKill = BALANCE_DEFAULT_THETA_KILL;
+  gains.iV_max = BALANCE_DEFAULT_IV_MAX;
+  g_state.controller.setBalanceGains(gains);
   g_state.controller.setTargetVelocity(0.0f);
   g_state.controller.setRequestedMode(InnerLongMode::LQR);
   init_lqr_params_defaults(&g_state.lqr_params);
   g_state.lqr_params_valid = true;
 
   reset_ekf(m, d);
+  if (!g_state.use_ekf) {
+    std::printf("MotionController: EKF disabled (SIM_USE_EKF=0)\n");
+  }
+  std::printf("MotionController: encoder velocity scale = %.3f\n", g_state.v_enc_scale);
   update_lqr_from_hip(m, d, true);
 
   if (!g_state.user_override.load()) {
@@ -386,12 +446,30 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
   est.gyroBias = 0.0f;
   est.valid = true;
 
-  if (g_state.ekf_initialized) {
-    mjtNum gyro_body[3] = {0, 0, 0};
-    mjtNum accel_body[3] = {0, 0, 0};
-    bool have_gyro = read_sensor_vec3(m, d, g_state.sensor_gyro, gyro_body);
-    bool have_acc = read_sensor_vec3(m, d, g_state.sensor_acc, accel_body);
+  mjtNum gyro_body[3] = {0, 0, 0};
+  mjtNum accel_body[3] = {0, 0, 0};
+  bool have_gyro = read_sensor_vec3(m, d, g_state.sensor_gyro, gyro_body);
+  bool have_acc = read_sensor_vec3(m, d, g_state.sensor_acc, accel_body);
+  float gyro_pitch = have_gyro ? static_cast<float>(gyro_body[1]) : 0.0f;
+  float gyro_yaw = have_gyro ? static_cast<float>(gyro_body[2]) : 0.0f;
 
+  double omega_L = 0.0;
+  double omega_R = 0.0;
+  if (g_state.jnt_wheel_L >= 0) {
+    omega_L = d->qvel[m->jnt_dofadr[g_state.jnt_wheel_L]];
+  }
+  if (g_state.jnt_wheel_R >= 0) {
+    omega_R = d->qvel[m->jnt_dofadr[g_state.jnt_wheel_R]];
+  }
+
+  float yaw_rate_enc = 0.0f;
+  if (g_state.wheel_base > 1e-6) {
+    yaw_rate_enc = static_cast<float>(g_state.wheel_radius * (omega_R - omega_L) /
+                                      g_state.wheel_base);
+  }
+  g_state.controller.setYawRates(gyro_yaw, yaw_rate_enc);
+
+  if (g_state.ekf_initialized) {
     float theta_acc = NAN;
     if (have_acc) {
       float ay = static_cast<float>(accel_body[1]);
@@ -402,25 +480,9 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
       }
     }
 
-    float gyro_pitch = have_gyro ? static_cast<float>(gyro_body[1]) : 0.0f;
-    float gyro_yaw = have_gyro ? static_cast<float>(gyro_body[2]) : 0.0f;
-
-    double omega_L = 0.0;
-    double omega_R = 0.0;
-    if (g_state.jnt_wheel_L >= 0) {
-      omega_L = d->qvel[m->jnt_dofadr[g_state.jnt_wheel_L]];
-    }
-    if (g_state.jnt_wheel_R >= 0) {
-      omega_R = d->qvel[m->jnt_dofadr[g_state.jnt_wheel_R]];
-    }
-
-    float v_enc = static_cast<float>(g_state.wheel_radius * 0.5 * (omega_L + omega_R));
-    float yaw_rate_enc = 0.0f;
-    if (g_state.wheel_base > 1e-6) {
-      yaw_rate_enc = static_cast<float>(g_state.wheel_radius * (omega_R - omega_L) /
-                                        g_state.wheel_base);
-    }
-
+    // Wheel joint velocities are opposite sign to world forward x in this model.
+    const float v_enc = static_cast<float>(
+        -g_state.v_enc_scale * g_state.wheel_radius * 0.5 * (omega_L + omega_R));
     float pos_enc = NAN;
     float dt = static_cast<float>(m->opt.timestep);
     bool ok = g_state.ekf.step(theta_acc, v_enc, pos_enc,
@@ -457,4 +519,32 @@ bool MotionControllerToggle() {
 
 bool MotionControllerIsEnabled() {
   return g_state.enabled.load();
+}
+
+bool MotionControllerStepHipTarget(int direction) {
+  if (direction == 0 || !g_state.hold_hips || g_state.jnt_hip_L < 0 ||
+      g_state.jnt_hip_R < 0) {
+    return false;
+  }
+
+  const int step = (direction > 0) ? 1 : -1;
+  const double hip_target = 0.5 * (g_state.hip_L_target + g_state.hip_R_target);
+  const int index = nearest_hip_lut_index(hip_target);
+  int next = index + step;
+  if (next < 0) {
+    next = 0;
+  }
+  if (next >= LQR_LUT_SIZE) {
+    next = LQR_LUT_SIZE - 1;
+  }
+  if (next == index) {
+    return false;
+  }
+
+  const double next_target = static_cast<double>(kHipLut[next]);
+  g_state.hip_L_target = next_target;
+  g_state.hip_R_target = next_target;
+  std::printf("MotionController: hip target -> LUT %d/%d (%.4f rad)\n",
+              next + 1, LQR_LUT_SIZE, next_target);
+  return true;
 }
