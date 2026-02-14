@@ -160,14 +160,109 @@ int joint_id(const mjModel* m, const char* name) {
     return mj_name2id(m, mjOBJ_JOINT, name);
 }
 
+// Compute geometric equilibrium theta where COM is directly above wheel contact
+// This is the angle where gravitational torque is minimized
+double compute_geometric_theta_eq(mjModel* m, mjData* d,
+                                   int jnt_hip_l, int jnt_hip_r,
+                                   double hip_angle) {
+    // Reset to keyframe
+    mj_resetDataKeyframe(m, d, 0);
+
+    int qpos_hip_l = m->jnt_qposadr[jnt_hip_l];
+    int qpos_hip_r = m->jnt_qposadr[jnt_hip_r];
+
+    // Get actuators for settling
+    int act_hip_L = mj_name2id(m, mjOBJ_ACTUATOR, "hip_L");
+    int act_hip_R = mj_name2id(m, mjOBJ_ACTUATOR, "hip_R");
+    int act_wheel_L = mj_name2id(m, mjOBJ_ACTUATOR, "wheel_L");
+    int act_wheel_R = mj_name2id(m, mjOBJ_ACTUATOR, "wheel_R");
+
+    // Save initial base state
+    double saved_qpos[7];
+    for (int j = 0; j < 7; j++) {
+        saved_qpos[j] = d->qpos[j];
+    }
+
+    // Set hip actuator targets
+    // For position actuators with gear: actuator_length = joint_angle * gear
+    // Position servo drives: actuator_length = ctrl
+    // Therefore: ctrl = joint_angle * gear
+    if (act_hip_L >= 0) {
+        mjtNum gear = m->actuator_gear[6 * act_hip_L];
+        d->ctrl[act_hip_L] = hip_angle * gear;
+    }
+    if (act_hip_R >= 0) {
+        mjtNum gear = m->actuator_gear[6 * act_hip_R];
+        d->ctrl[act_hip_R] = hip_angle * gear;
+    }
+    if (act_wheel_L >= 0) d->ctrl[act_wheel_L] = 0.0;
+    if (act_wheel_R >= 0) d->ctrl[act_wheel_R] = 0.0;
+
+    // Run simulation to let constraints settle with fixed base
+    for (int step = 0; step < 200; step++) {
+        // Fix freejoint to prevent drift
+        for (int j = 0; j < 7; j++) {
+            d->qpos[j] = saved_qpos[j];
+        }
+        for (int j = 0; j < 6; j++) {
+            d->qvel[j] = 0.0;
+        }
+        mj_step(m, d);
+    }
+
+    // Get wheel bodies
+    int body_wheel_L = mj_name2id(m, mjOBJ_BODY, "wheel_geom");
+    int body_wheel_R = mj_name2id(m, mjOBJ_BODY, "wheel_geom_2");
+
+    // Compute upper body COM (excluding wheels)
+    double com[3] = {0, 0, 0};
+    double total_mass = 0.0;
+    for (int b = 0; b < m->nbody; b++) {
+        // Skip wheel bodies
+        if (b == body_wheel_L || b == body_wheel_R) continue;
+
+        double body_mass = m->body_mass[b];
+        if (body_mass > 0) {
+            com[0] += d->xipos[3*b + 0] * body_mass;
+            com[1] += d->xipos[3*b + 1] * body_mass;
+            com[2] += d->xipos[3*b + 2] * body_mass;
+            total_mass += body_mass;
+        }
+    }
+    com[0] /= total_mass;
+    com[1] /= total_mass;
+    com[2] /= total_mass;
+
+    // Get wheel contact point (wheel body position - radius)
+    double wheel_x = d->xpos[3*body_wheel_L + 0];
+    double wheel_z = d->xpos[3*body_wheel_L + 2] - 0.08547;  // subtract radius
+
+    // COM position relative to wheel contact (inverted pendulum pivot)
+    double com_rel_x = com[0] - wheel_x;
+    double com_rel_z = com[2] - wheel_z;
+
+    // Equilibrium angle: where COM is directly above wheel contact
+    // Positive com_rel_x (COM ahead of wheel) requires negative theta (lean back)
+    double theta_eq = -std::atan2(com_rel_x, com_rel_z);
+
+    return theta_eq;
+}
+
 bool set_equilibrium_wheel_ctrl(mjModel* m, mjData* d,
                                 int hip_id, int hip_r_id,
                                 int act_hip_l, int act_hip_r,
                                 int act_wheel_l, int act_wheel_r,
                                 double hip_angle) {
-    // Set hip position targets to hold angle (position actuators).
-    if (act_hip_l >= 0) d->ctrl[act_hip_l] = hip_angle;
-    if (act_hip_r >= 0) d->ctrl[act_hip_r] = hip_angle;
+    // Set hip position targets to hold angle
+    // ctrl = joint_angle * gear (due to transmission scaling)
+    if (act_hip_l >= 0) {
+        mjtNum gear = m->actuator_gear[6 * act_hip_l];
+        d->ctrl[act_hip_l] = hip_angle * gear;
+    }
+    if (act_hip_r >= 0) {
+        mjtNum gear = m->actuator_gear[6 * act_hip_r];
+        d->ctrl[act_hip_r] = hip_angle * gear;
+    }
 
     // Zero velocities and accelerations for equilibrium.
     mju_zero(d->qvel, m->nv);
@@ -338,6 +433,20 @@ int main(int argc, char** argv) {
             int act_hip_r = actuator_id(m, "hip_R");
             int act_wheel_l = actuator_id(m, "wheel_L");
             int act_wheel_r = actuator_id(m, "wheel_R");
+
+            // Compute COM-aligned equilibrium theta (geometric calculation)
+            double theta_eq = compute_geometric_theta_eq(m, d, hip_id, hip_r_id, hip);
+
+            std::printf("  hip=%.4f  theta_eq=%.6f (%.2f°)\n", hip, theta_eq, theta_eq * 57.3);
+
+            // Reset to equilibrium state
+            int qpos_hip_l = m->jnt_qposadr[hip_id];
+            int qpos_hip_r = m->jnt_qposadr[hip_r_id];
+            d->qpos[qpos_hip_l] = hip;
+            d->qpos[qpos_hip_r] = hip;
+            set_pitch_in_qpos(d->qpos, theta_eq);
+            mj_forward(m, d);
+
             set_equilibrium_wheel_ctrl(m, d,
                                        hip_id, hip_r_id,
                                        act_hip_l, act_hip_r,
@@ -350,7 +459,6 @@ int main(int argc, char** argv) {
             mjtNum tau_l = 0.0;
             mjtNum tau_r = 0.0;
             wheel_torques(m, d, &tau_l, &tau_r);
-            mjtNum theta_eq = pitch_from_state(d);
             mjtNum u_eq = tau_l + tau_r;
 
             std::ostringstream ctag;

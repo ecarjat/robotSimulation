@@ -87,3 +87,17 @@ target_include_directories(linearize_hip PRIVATE
 )
 
 target_link_libraries(linearize_hip PRIVATE ${MUJOCO_LIB})
+
+# Create an INTERFACE target for MuJoCo to share with tests
+add_library(mujoco_interface INTERFACE)
+target_include_directories(mujoco_interface INTERFACE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(mujoco_interface INTERFACE ${MUJOCO_LIB})
+
+# Export as mujoco::mujoco for tests
+add_library(mujoco::mujoco ALIAS mujoco_interface)
+
+# Optional: enable testing
+option(BUILD_LINEARIZE_TESTS "Build linearize_hip regression tests" ON)
+if(BUILD_LINEARIZE_TESTS)
+  add_subdirectory(tests)
+endif()
