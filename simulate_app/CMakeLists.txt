@@ -175,3 +175,12 @@ target_link_libraries(measure_eq PRIVATE ${MUJOCO_LIB})
 add_executable(find_eq find_eq.cc)
 target_include_directories(find_eq PRIVATE ${MUJOCO_INCLUDE_DIR})
 target_link_libraries(find_eq PRIVATE ${MUJOCO_LIB})
+
+# Keyframe generator for equilibrium hip/theta table
+add_executable(generate_keyframes generate_keyframes.cc)
+target_include_directories(generate_keyframes PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(generate_keyframes PRIVATE ${MUJOCO_LIB})
+
+add_executable(compute_com compute_com.cc)
+target_include_directories(compute_com PRIVATE ${MUJOCO_INCLUDE_DIR})
+target_link_libraries(compute_com PRIVATE ${MUJOCO_LIB})
