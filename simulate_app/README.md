@@ -11,7 +11,22 @@ From repository root:
 
 ```bash
 cmake -S . -B build
-cmake --build build --target simulate_mc test_balance
+cmake --build build --target simulate_mc test_balance test_motion_controller_bridge
+```
+
+## Automated Tests
+
+`simulate_app` now has headless `ctest` coverage for:
+
+- bridge hip-target LUT stepping and gear-scaled actuator targets
+- short `test_balance` smoke run (ground-truth path)
+- short `test_balance` smoke run (`StateEstimator` path with `SIM_EST_THETA_ONLY=1`)
+- keyframe selection by name and index
+
+Run:
+
+```bash
+ctest --test-dir build/simulate_app/tests --output-on-failure
 ```
 
 ## `simulate_mc` (interactive)

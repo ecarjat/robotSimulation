@@ -6,6 +6,8 @@ else()
   project(mujoco_simulate_mc LANGUAGES C CXX)
 endif()
 
+include(CTest)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
@@ -131,3 +133,8 @@ target_include_directories(test_balance PRIVATE
 target_compile_definitions(test_balance PRIVATE APP_CONFIG_HOST)
 
 target_link_libraries(test_balance PRIVATE ${MUJOCO_LIB})
+
+option(BUILD_SIMULATE_TESTS "Build simulate_app regression tests" ON)
+if(BUILD_SIMULATE_TESTS AND BUILD_TESTING)
+  add_subdirectory(tests)
+endif()
