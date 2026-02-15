@@ -15,6 +15,13 @@ bool MotionControllerToggle();
 // Returns whether the controller is currently enabled.
 bool MotionControllerIsEnabled();
 
+// Toggle wheel control enable state; returns new state.
+bool WheelControlToggle();
+
+// Toggle static measurement mode; returns new state.
+// In static mode, the robot base is fixed in place and wheels are disabled.
+bool StaticModeToggle();
+
 // Step hip targets to the next LUT angle. Positive direction moves up, negative moves down.
 // Returns true if the target changed.
 bool MotionControllerStepHipTarget(int direction);

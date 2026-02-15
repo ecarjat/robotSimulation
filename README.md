@@ -4,33 +4,62 @@ This repo uses a multi-step pipeline to go from CAD → MJCF → linearization �
 
 ## Overview (pipeline)
 
-1) **Export MJCF from Onshape**
+1) **Export MJCF from Onshape (if geometry changed)**
    `onshape-to-robot myRobot`
    → `myRobot/scene.xml`, `myRobot/robot.xml`, meshes
 
-2) **Linearize across hip angles**
-   `build/lqr_harness/linearize_hip --model myRobot/scene.xml --hip hip_L --hip-r hip_R --min -0.27 --max 0.375 --equilibrium-wheels`
-   → `linearize_out/A_hip_*.csv`, `B_hip_*.csv`
-   → reduced `Ared_hip_*.csv`, `Bred_hip_*.csv`
-   → equilibrium `eq_hip_*.csv`, `ctrl_hip_*.csv`
+2) **Run the full LQR pipeline (recommended)**
+   `python3 tools/run_lqr_pipeline.py`
+   → linearizes with equilibrium wheel solve and writes keyframes  
+   → runs `tools/lqr_sweep.py` (3-state LUT, eq included, no sign flip)  
+   → runs adaptive per-hip `K0` search with `tools/k0_sweep.py` (ground-truth by default)  
+   → updates `lqr_lut.csv` `K0` column  
+   → regenerates `../stm32Controller/firmware/app/control/lqr_lut_data.h`
 
-3) **System identification (MuJoCo model validation)**
-   `build/sysid_fast myRobot/scene.xml`
-   → Measures actual a, b, c coefficients from simulation
+3) **Validate**
+   `build/simulate_app/test_balance myRobot/scene.xml 240 --key eq_hip_p0525`
+   (and/or run all keyframes)
+   See [`simulate_app/README.md`](simulate_app/README.md) for `simulate_mc`/`test_balance`
+   usage, key controls, and current estimator workaround.
 
-4) **Find equilibrium pitch per hip angle**
-   `build/find_eq myRobot/scene.xml`
-   → `theta_eq` values where zero torque needed
+### Recommended one-command workflow
 
-5) **Tune gains (empirical or LQR sweep)**
-   Either: `python3 tools/lqr_sweep.py --diag --include-eq`
-   Or: Manual tuning via `test_balance` iterations
+```bash
+python3 tools/run_lqr_pipeline.py
+```
 
-6) **Generate LUT files**
-   Edit `lqr_lut.csv` → run `python3 tools/lqr_lut_to_header.py lqr_lut.csv --out simulate_app/lqr_lut_data.h`
+### Manual equivalent workflow
 
-7) **Run simulation with MotionController**
-   `build/test_balance myRobot/scene.xml 120 5.0`
+```bash
+build/lqr_harness/linearize_hip \
+  --model myRobot/scene.xml \
+  --equilibrium-wheels \
+  --write-keyframes myRobot/keyframes_eq.xml \
+  --out linearize_out \
+  --reduced-no-x
+
+python3 tools/lqr_sweep.py \
+  --dir linearize_out \
+  --state-dim 3 \
+  --include-eq \
+  --no-sign-flip \
+  --lut-out lqr_lut.csv
+
+# Per-hip K0 sweep (run once per keyframe, or use run_lqr_pipeline.py to automate this).
+python3 tools/k0_sweep.py --duration 2 --k0-values=-0.25 --keys eq_hip_p0525 --run-csv k0_sweep_runs.csv
+
+python3 tools/lqr_lut_to_header.py \
+  --out ../stm32Controller/firmware/app/control/lqr_lut_data.h \
+  lqr_lut.csv
+```
+
+### Tool docs (detailed)
+
+- `linearize_hip`: [`Linearize Hip Guide`](#linearize-hip-guide)
+- `lqr_sweep.py`: [`tools/README.md#lqr_sweeppy`](tools/README.md#lqr_sweeppy)
+- `k0_sweep.py`: [`tools/README.md#k0_sweeppy`](tools/README.md#k0_sweeppy)
+- `run_lqr_pipeline.py`: [`docs/run_lqr_pipeline.md`](docs/run_lqr_pipeline.md)
+- `simulate_mc` and `test_balance`: [`simulate_app/README.md`](simulate_app/README.md)
 
 ```
 Onshape
@@ -39,17 +68,8 @@ Onshape
 onshape-to-robot myRobot
     |  (myRobot/scene.xml + meshes)
     v
-build/lqr_harness/linearize_hip
-    |  (A/B + Ared/Bred + eq_hip + ctrl_hip)
-    v
-sysid_fast (validate model)
-    |  (actual a, b, c coefficients)
-    v
-find_eq (equilibrium pitch)
-    |  (theta_eq per hip)
-    v
-lqr_sweep.py OR manual tuning
-    |  (K0..K3 gains)
+tools/run_lqr_pipeline.py
+    |  (linearize_hip + lqr_sweep + adaptive k0_sweep)
     v
 lqr_lut.csv + lqr_lut_to_header.py
     |  (lqr_lut_data.h)
@@ -110,189 +130,323 @@ python3 tools/lqr_sweep.py --diag --include-eq --eq-dir linearize_out --eq-tol 1
 
 ---
 
-## 4) lqr_harness/linearize_hip (Detailed)
+## Linearize Hip Guide
 
-**What it does**
-Sweeps hip angle, sets both hips, optionally solves equilibrium wheel torque, then linearizes the model using `mjd_transitionFD`.
+This section explains what `lqr_harness/linearize_hip.cpp` does and how it builds the linear models used by simulation and firmware tooling.
 
-**Command**
-```
-./build/lqr_harness/linearize_hip --equilibrium-wheels \
+### Purpose
+
+`linearize_hip` generates linear state-space models of the MuJoCo robot at multiple hip configurations.
+
+For each sampled hip angle, it can produce:
+
+- full linearization matrices from MuJoCo: `A_hip_*.csv`, `B_hip_*.csv`
+- reduced models used by the controller: `Ared_hip_*.csv`, `Bred_hip_*.csv`
+- optional reduced 3-state models: `Ared3_hip_*.csv`, `Bred3_hip_*.csv`
+- optional equilibrium metadata: `ctrl_hip_*.csv`, `eq_hip_*.csv`
+
+### What state it linearizes
+
+The full MuJoCo transition linearization uses:
+
+- state dimension: `2*nv + na`
+- input dimension: `nu`
+
+The reduced 4-state controller model is:
+
+- `x` (forward position)
+- `xdot` (forward velocity)
+- `theta` (pitch)
+- `thetadot` (pitch rate)
+
+In code this is extracted from:
+
+- free-joint translation-x tangent index
+- free-joint rotation-y tangent index
+- corresponding velocity indices
+
+### Typical usage
+
+```bash
+build/lqr_harness/linearize_hip \
   --model myRobot/scene.xml \
-  --hip hip_L --hip-r hip_R \
-  --min -0.27 --max 0.375
+  --key eq_hip_p0525 \
+  --equilibrium-wheels \
+  --min -0.27 \
+  --max 0.375 \
+  --steps 7 \
+  --out linearize_out
 ```
 
-**Outputs**
-- `linearize_out/A_hip_*.csv`, `B_hip_*.csv`
-  Full MuJoCo discrete linearization with state `x=[qvel,qpos,act]`, input `u=ctrl`
-- `linearize_out/Ared_hip_*.csv`, `Bred_hip_*.csv`
-  Reduced 4-state model for MotionController:
-  - state = `[x, xdot, theta, thetadot]`
-  - input = `u_sum` **torque (N·m)**
-- `linearize_out/ctrl_hip_*.csv`
-  Equilibrium control values (hip targets + wheel torques) at each hip
+Key options:
 
-**Reduced model assumptions**
-- `x = qpos[0]`
-- `xdot = qvel[0]`
-- `theta ≈ 2*qpos[qy]` (small angle, `qy` is free joint quaternion Y)
-- `thetadot = qvel[4]` (base angular velocity around Y)
-- Input uses wheel actuators summed and **converted to torque units** (`Bred` is scaled by gear).
+- `--model`: MuJoCo XML (typically `myRobot/scene.xml`)
+- `--key`: keyframe seed for operating point initialization
+- `--equilibrium-wheels`: solve wheel controls to hold pose via inverse dynamics
+- `--write-keyframes <path>`: write settled equilibrium keyframes (`<mujocoinclude>`) for the sampled hip range (requires `--equilibrium-wheels`)
+- `--reduced-fd`: compute reduced A/B by finite differences directly in reduced coordinates
+- `--reduced-no-x`: also output 3-state `[v, theta, thetadot]` models
 
-**Units**
-- `Ared`: unitless discrete-time transition
-- `Bred`: per **N·m** input
-- `ctrl_hip_*.csv`: `act_*` in ctrl units, `u_sum` in ctrl units (before gear)
+### Execution flow
 
----
+#### 1) Parse options and load model
+
+The executable parses CLI flags into `Options`, loads XML with `mj_loadXML`, allocates `mjData`, and forces the MuJoCo integrator to Euler for `mjd_transitionFD`.
+
+#### 2) Choose initial seed state
+
+It resolves `--key` via `mj_name2id(..., mjOBJ_KEY, ...)`.
+
+- if found: `mj_resetDataKeyframe(m, d, key_id)`
+- if missing: warning then `mj_resetData(m, d)`
+
+Important: keyframe selection seeds the main simulation state used for linearization. Geometric `theta_eq` computation and `--write-keyframes` pose generation use a canonical reset state, so they are designed to be invariant to `--key`.
+
+#### 3) Sweep hip range
+
+For `i in [0, steps-1]`, hip is sampled linearly in `[hip_min, hip_max]`.
+
+At each sample:
+
+- set `hip_L = hip`
+- if present, set `hip_R = hip`
+- run `mj_forward`
+
+#### 4) Optional equilibrium solve (`--equilibrium-wheels`)
+
+If enabled, it builds an operating point in two stages.
+
+1. Compute geometric `theta_eq` (`compute_geometric_theta_eq`):
+- reset to canonical model state (`mj_resetData`)
+- apply hip servo targets (`ctrl = hip_angle * gear`)
+- settle constraints with base fixed
+- compute upper-body COM (excluding wheels)
+- derive pitch so COM aligns above wheel contact: `theta_eq = -atan2(com_rel_x, com_rel_z)`
+2. Solve wheel controls for static equilibrium (`set_equilibrium_wheel_ctrl`):
+- set hip controls
+- zero `qvel/qacc/external forces`
+- run `mj_inverse`
+- map required wheel-joint torques to actuator controls (`ctrl = tau / gear`)
+
+Then it writes:
+
+- `ctrl_hip_*.csv`: actuator controls at the operating point
+- `eq_hip_*.csv`: `theta_eq`, `u_eq`, and per-wheel torques
+
+If `--write-keyframes` is set, it also generates one settled `qpos` keyframe per sampled hip:
+
+- key names: `eq_hip_mXXXX` / `eq_hip_pXXXX`
+- base pose adjusted so wheel contacts sit on the ground
+- passive linkage/contact settled with hips held and wheels unforced
+- generation starts from canonical reset state for deterministic output
+
+#### 5) Full linearization from MuJoCo
+
+It calls `mjd_transitionFD(m, d, eps, 1, A, B, nullptr, nullptr)` and writes:
+
+- `A_hip_*.csv`
+- `B_hip_*.csv`
+
+These are discrete one-step Jacobians around the current state/control.
+
+#### 6) Build reduced 4-state model
+
+By default (`--no-reduced` not set), it creates:
+
+- `Ared = C * A * S`
+- `Bred = C * B * U`
+
+where:
+
+- `C` maps full state to reduced `[x, xdot, theta, thetadot]`
+- `S` maps reduced perturbations back to full-state tangent coordinates
+- `U` is implicit in code by summing `wheel_L` and `wheel_R` columns into one `u_sum`
+
+Outputs:
+
+- `Ared_hip_*.csv` (4x4)
+- `Bred_hip_*.csv` (4x1)
+
+#### 7) Optional reduced finite-difference mode (`--reduced-fd`)
+
+Instead of projecting full `A/B`, it perturbs reduced coordinates directly and simulates one step:
+
+- perturbs `x`, `xdot`, `theta`, `thetadot`
+- perturbs `u_sum` by splitting delta equally across both wheels
+- estimates derivatives numerically from next-step reduced state
+
+This is useful to validate projection-based reduced matrices.
+
+#### 8) Optional 3-state model (`--reduced-no-x`)
+
+If enabled, it also builds `[v, theta, thetadot]` models:
+
+- projection method by default
+- FD method if `--reduced-fd` is set
+
+Outputs:
+
+- `Ared3_hip_*.csv` (3x3)
+- `Bred3_hip_*.csv` (3x1)
+
+### Units and conventions
+
+- full `B` from `mjd_transitionFD` is in actuator control units
+- reduced `Bred` in projection mode is also kept in control units
+- with `--equilibrium-wheels`, inverse-dynamics torque is converted to control using actuator gear
+
+### Common pitfalls
+
+- missing `--key` seed: if keyframe does not exist, tool falls back to default reset state and prints a warning
+- model convention mismatch: reduced-state extraction assumes forward along free-joint X and pitch about free-joint Y
+- wheel-input reduction: default `u_sum` sums left/right wheel columns, so asymmetry can appear in reduced input channel
+
+### Generated file naming
+
+For sample `hip = 0.2675`:
+
+- `A_hip_0.267500.csv`
+- `B_hip_0.267500.csv`
+- `Ared_hip_0.267500.csv`
+- `Bred_hip_0.267500.csv`
+- optional `Ared3_hip_0.267500.csv`, `Bred3_hip_0.267500.csv`
+- optional `ctrl_hip_0.267500.csv`, `eq_hip_0.267500.csv`
 
 ---
 
 ## LUT Generation Process (Full Workflow)
 
-### Step 1: System Identification
+This section describes the **current recommended process** to generate `lqr_lut.csv` and firmware header data.
 
-Run `sysid_fast` to measure actual system dynamics from MuJoCo:
-
-```bash
-cd simulate_app/build
-cmake -DMUJOCO_DIR=/path/to/mujoco-3.4.0 .. && make -j$(nproc) sysid_fast
-./sysid_fast ../../myRobot/scene.xml
-```
-
-**What it measures:**
-- `a` — gravity term (rad/s² per rad pitch): θ̈ ∝ a·θ
-- `b` — torque→pitch coupling (rad/s² per Nm): θ̈ ∝ b·u
-- `c` — torque→velocity coupling ((m/s²)/Nm): ẍ ∝ c·u
-
-**Example results (nominal hip):**
-- a ≈ 113 rad/s² per rad (open-loop pole ≈ 10.6 rad/s)
-- b ≈ 2.95 rad/s² per Nm
-- c ≈ -1.57 (m/s²)/Nm
-
-### Step 2: Find Equilibrium Pitch
-
-The robot's COG is NOT aligned with the wheel axis. Find `theta_eq` where zero torque balances:
+### Step 1: Run the orchestrator
 
 ```bash
-make -j$(nproc) find_eq
-./find_eq ../../myRobot/scene.xml
+python3 tools/run_lqr_pipeline.py
 ```
 
-**Output example:**
+Default orchestrator behavior:
 
-| Hip (rad) | theta_eq (rad) | theta_eq (°) |
-|-----------|----------------|--------------|
-| -0.270    | -0.145         | -8.3°        |
-| -0.1625   | -0.115         | -6.6°        |
-| -0.055    | -0.070         | -4.0°        |
-| **0.0525**| **-0.095**     | **-5.4°**    |
-| 0.160     | +0.025         | +1.4°        |
-| 0.2675    | +0.010         | +0.6°        |
-| 0.375     | -0.100         | -5.7°        |
+- runs `build/lqr_harness/linearize_hip` with:
+  - `--equilibrium-wheels`
+  - `--write-keyframes myRobot/keyframes_eq.xml`
+  - `--out linearize_out`
+  - `--reduced-no-x`
+- runs `python3 tools/lqr_sweep.py` with:
+  - `--dir linearize_out`
+  - `--state-dim 3`
+  - `--include-eq`
+  - `--no-sign-flip`
+  - `--lut-out lqr_lut.csv`
+- runs per-hip `python3 tools/k0_sweep.py` search:
+  - default seeds: `-100,-50,-1`
+  - adaptive refinement rounds around current best value
+  - default mode: `SIM_USE_EKF=0` (ground-truth tuning)
+- updates `K0` in `lqr_lut.csv` per hip
+- regenerates:
+  - `../stm32Controller/firmware/app/control/lqr_lut_data.h`
 
-### Step 3: Tune LQR Gains
+### Step 2: (Optional) control K0 search aggressiveness
 
-Either use `lqr_sweep.py` with corrected model, or tune empirically via `test_balance`:
+Example with wider initial range and more refinement:
 
 ```bash
-make -j$(nproc) test_balance
-./test_balance ../../myRobot/scene.xml 120 5.0
+python3 tools/run_lqr_pipeline.py \
+  --k0-values=-200,-100,-50,-10,-1,-0.1 \
+  --k0-refine-rounds 3 \
+  --k0-max-new-per-round 4 \
+  --k0-duration 60 \
+  --k0-print-dt 20
 ```
 
-**Control law:** `u = -(K[0]*x_err + K[1]*v_err + K[2]*theta_err + K[3]*thetaDot)`
+Notes:
 
-**Tuned gains (2026-02-11):**
-```
-K[0] = -5.0    (position → torque)
-K[1] = -7.5    (velocity → torque)
-K[2] = -400.0  (pitch → torque)
-K[3] = -24.0   (pitch rate → torque)
-```
+- use longer `--k0-duration` for more reliable ranking
+- keep `--k0-sim-use-ekf 0` while identifying control gains
+- use `--k0-sim-use-ekf 1` only for estimator-path sensitivity checks
 
-### Step 4: Create lqr_lut.csv
+### Step 3: Validate
 
-Format: `hip,K0,K1,K2,K3,theta_eq,u_eq`
-
-```csv
-hip,K0,K1,K2,K3,theta_eq,u_eq
--0.270000,-5.0,-7.5,-400.0,-24.0,-0.145,0.0
--0.162500,-5.0,-7.5,-400.0,-24.0,-0.115,0.0
--0.055000,-5.0,-7.5,-400.0,-24.0,-0.070,0.0
-0.052500,-5.0,-7.5,-400.0,-24.0,-0.095,0.0
-0.160000,-5.0,-7.5,-400.0,-24.0,0.025,0.0
-0.267500,-5.0,-7.5,-400.0,-24.0,0.010,0.0
-0.375000,-5.0,-7.5,-400.0,-24.0,-0.100,0.0
-```
-
-### Step 5: Generate Header
+Run keyframe-aware balance tests after LUT/header update:
 
 ```bash
-python3 tools/lqr_lut_to_header.py lqr_lut.csv --out simulate_app/lqr_lut_data.h
+build/simulate_app/test_balance myRobot/scene.xml 240 --key eq_hip_p0525 --print-dt 240
 ```
 
-Or for firmware:
-```bash
-python3 tools/lqr_lut_to_header.py lqr_lut.csv --out ../stm32Controller/firmware/app/control/lqr_lut_data.h
-```
+For interactive `simulate_mc`, environment flags, and the current StateEstimator
+workaround, see [`simulate_app/README.md`](simulate_app/README.md).
 
-### Step 6: Validate
+Repeat for all `eq_hip_*` keyframes you care about.
 
-```bash
-./test_balance ../../myRobot/scene.xml 120 5.0
-```
+### Outputs produced
 
-Pass criteria (120s test):
-- Position drift < 200m
-- Velocity < 3 m/s
-- Pitch < 10°
+- `linearize_out/A*_hip_*.csv`, `B*_hip_*.csv`, `eq_hip_*.csv`, `ctrl_hip_*.csv`
+- `myRobot/keyframes_eq.xml`
+- `lqr_lut.csv` (with per-hip adapted `K0`)
+- `linearize_out/k0_sweeps/*.csv` (including `k0_selected.csv`)
+- `../stm32Controller/firmware/app/control/lqr_lut_data.h`
+
+### Detailed references
+
+- linearization details: [`Linearize Hip Guide`](#linearize-hip-guide)
+- LQR sweep details: [`tools/README.md#lqr_sweeppy`](tools/README.md#lqr_sweeppy)
+- K0 sweep details: [`tools/README.md#k0_sweeppy`](tools/README.md#k0_sweeppy)
+- orchestrator details: [`docs/run_lqr_pipeline.md`](docs/run_lqr_pipeline.md)
 
 ---
 
-## Key Findings (2026-02-11)
+## Key Findings (Current Workflow)
 
-### 1. Velocity Gain Sign (Critical!)
+### 1. Tune `K0` on ground-truth first
 
-**K[1] must be NEGATIVE** (same sign as K[2]).
+Use `SIM_USE_EKF=0` during `K0` identification (`tools/k0_sweep.py` and `tools/run_lqr_pipeline.py` default).
 
-**Why:** To slow down, the robot must first lean BACKWARD. This is a non-minimum phase system:
-- Positive wheel torque → body tilts backward
-- Backward tilt → gravity decelerates forward motion
+Why:
 
-Previous attempts with K[1] > 0 caused: forward lean → acceleration → divergence.
+- `linearize_hip` and `lqr_sweep` are plant/model based.
+- `K0` should be selected against plant behavior first, then re-checked with EKF enabled.
+- This avoids estimator-path bias contaminating gain search.
 
-### 2. Model Mismatch
+### 2. EKF accel tilt can destabilize during dynamic motion
 
-Analytical linearization predicted K[2] ≈ -15, but empirical tuning needed K[2] = -400 (25× larger).
+When EKF is enabled, accel-based pitch is biased by longitudinal acceleration (`a_x/g` effect).  
+This can inject wrong `theta` into control and cause drift/divergence.
 
-**Root cause:** MuJoCo model dynamics differ significantly from analytical inverted pendulum assumptions.
+Practical implication:
 
-**Solution:** Always validate with `sysid_fast` before trusting analytical gains.
+- If EKF-on behavior diverges while EKF-off is stable, this is typically an estimator integration/gating issue, not a pure LQR gain issue.
+- Keep accel gating/variance inflation in estimator path during dynamic phases.
 
-### 3. Equilibrium Pitch Offset
+### 3. `linearize_hip` is the source of truth for operating points
 
-The robot needs non-zero pitch to balance at different hip angles.
+`linearize_hip` now handles:
 
-**Critical fix:** `theta_ref_limit` must be > max |theta_eq|
-- Old: 0.05 rad (3°) — too small, clamped theta_eq values
-- New: 0.20 rad (11.5°) — allows full range
+- equilibrium wheel solve
+- grounded equilibrium keyframe generation
+- reduced model export used by `lqr_sweep`
 
-### 4. Performance Summary
+This replaces older split workflows where equilibrium came from separate tools.
 
-| Config | x_max (120s) | v_max | Improvement |
-|--------|--------------|-------|-------------|
-| Baseline (no theta_eq, weak gains) | 2323m | 25.8 m/s | — |
-| Tuned gains only | 615m | 5.9 m/s | 3.8× |
-| **Tuned + theta_eq + theta_ref_limit** | **101m** | **1.3 m/s** | **23×** |
+### 4. Sign consistency checks matter for LUT continuity
+
+Use `lqr_sweep.py --no-sign-flip` (or equivalent via orchestrator) to reject gain sets that change sign between neighboring hip operating points.
+
+This avoids abrupt controller behavior across LUT interpolation regions.
+
+### 5. `K0` should be hip-dependent and searched adaptively
+
+The current pipeline supports per-hip adaptive `K0` search (coarse seeds + refinement rounds), then writes selected `K0` values back into `lqr_lut.csv`.
+
+This is preferred over one global fixed `K0` for all hip postures.
 
 ---
 
 ## Notes / Gotchas
 
-- Use `env -u PYTHONHOME -u PYTHONPATH` when running Python tools to avoid Fusion's Python interfering.
-- `mjd_transitionFD` requires Euler integrator; the tool switches automatically.
-- For symmetric COM, use `--mirror-left-to-right` to generate right side from left.
-- If LQR sweep finds no stable Q/R, try smaller R or check B scaling.
-- **Always check `theta_ref_limit`** — if theta_eq values are being clamped, the controller can't converge.
-- **Test at 120s minimum** — 60s tests can pass with unstable configs that diverge later.
+- Prefer the orchestrator (`python3 tools/run_lqr_pipeline.py`) over manual steps to avoid file/version drift between tools.
+- `k0_sweep.py` and `run_lqr_pipeline.py` tune `K0` in ground-truth mode by default (`SIM_USE_EKF=0`); treat EKF-enabled runs as a validation phase.
+- When passing negative comma-separated K0 lists, use the `=` form:
+  `--k0-values=-100,-50,-1`
+- `mjd_transitionFD` requires Euler integrator; `linearize_hip` enforces/switches this automatically.
+- If `lqr_sweep.py` reports no stable Q/R, widen `--q-scale` / `--r-scale` ranges and verify `Ared/Bred` were regenerated from the current model.
+- Re-run the full pipeline whenever geometry, contact model, actuator setup, or keyframes change.
+- Validate over long horizons (for example 120-240s); short tests can hide slow drift modes.
