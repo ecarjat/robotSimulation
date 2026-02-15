@@ -63,6 +63,75 @@ mjData* d = nullptr;
 
 using Seconds = std::chrono::duration<double>;
 
+void PrintUsage(const char* argv0) {
+  std::printf("Usage: %s [model_path] [--key name_or_index]\n", argv0);
+}
+
+void PrintAvailableKeyframes(const mjModel* model) {
+  if (!model) {
+    return;
+  }
+  std::printf("Available keyframes (%d):\n", model->nkey);
+  for (int i = 0; i < model->nkey; ++i) {
+    const char* name = mj_id2name(model, mjOBJ_KEY, i);
+    std::printf("  [%d] %s\n", i, (name && name[0]) ? name : "(unnamed)");
+  }
+}
+
+bool ResolveKeyframeSpec(const mjModel* model, const char* key_spec, int* key_index) {
+  if (!model || !key_spec || !key_spec[0] || !key_index) {
+    return false;
+  }
+
+  char* end = nullptr;
+  long idx = std::strtol(key_spec, &end, 10);
+  if (end && *end == '\0') {
+    if (idx < 0 || idx >= model->nkey) {
+      std::printf("ERROR: keyframe index out of range: %ld (valid [0, %d))\n",
+                  idx, model->nkey);
+      return false;
+    }
+    *key_index = static_cast<int>(idx);
+    return true;
+  }
+
+  const int id = mj_name2id(model, mjOBJ_KEY, key_spec);
+  if (id < 0) {
+    std::printf("ERROR: keyframe name not found: '%s'\n", key_spec);
+    return false;
+  }
+
+  *key_index = id;
+  return true;
+}
+
+bool ApplyStartupKeyframe(mjModel* model, mjData* data, mj::Simulate& sim,
+                          const char* key_spec) {
+  if (!key_spec || !key_spec[0]) {
+    return true;
+  }
+  if (!model || !data) {
+    return false;
+  }
+  if (model->nkey <= 0) {
+    std::printf("ERROR: model has no keyframes, cannot apply --key '%s'\n", key_spec);
+    return false;
+  }
+
+  int key_index = 0;
+  if (!ResolveKeyframeSpec(model, key_spec, &key_index)) {
+    PrintAvailableKeyframes(model);
+    return false;
+  }
+
+  mj_resetDataKeyframe(model, data, key_index);
+  sim.key = key_index;
+  const char* key_name = mj_id2name(model, mjOBJ_KEY, key_index);
+  std::printf("Startup keyframe: %d (%s)\n", key_index,
+              (key_name && key_name[0]) ? key_name : "(unnamed)");
+  return true;
+}
+
 void PrintBodyCom(const mjModel* m, const mjData* d, const char* body_name) {
   if (!m || !d || !body_name) {
     return;
@@ -325,7 +394,7 @@ mjModel* LoadModel(const char* file, mj::Simulate& sim) {
 }
 
 // simulate in background thread (while rendering in main thread)
-void PhysicsLoop(mj::Simulate& sim) {
+void PhysicsLoop(mj::Simulate& sim, const char* startup_key_spec) {
   // cpu-sim synchronization point
   std::chrono::time_point<mj::Simulate::Clock> syncCPU;
   mjtNum syncSim = 0;
@@ -340,6 +409,7 @@ void PhysicsLoop(mj::Simulate& sim) {
       mjData* dnew = nullptr;
       if (mnew) dnew = mj_makeData(mnew);
       if (dnew) {
+        ApplyStartupKeyframe(mnew, dnew, sim, startup_key_spec);
         sim.Load(mnew, dnew, sim.dropfilename);
 
         // lock the sim mutex
@@ -368,6 +438,7 @@ void PhysicsLoop(mj::Simulate& sim) {
       mjData* dnew = nullptr;
       if (mnew) dnew = mj_makeData(mnew);
       if (dnew) {
+        ApplyStartupKeyframe(mnew, dnew, sim, startup_key_spec);
         sim.Load(mnew, dnew, sim.filename);
 
         // lock the sim mutex
@@ -539,7 +610,8 @@ void PhysicsLoop(mj::Simulate& sim) {
 
 //-------------------------------------- physics_thread --------------------------------------------
 
-void PhysicsThread(mj::Simulate* sim, const char* filename) {
+void PhysicsThread(mj::Simulate* sim, const char* filename,
+                   const char* startup_key_spec) {
   // request loadmodel if file given (otherwise drag-and-drop)
   if (filename != nullptr) {
     sim->LoadMessage(filename);
@@ -551,6 +623,7 @@ void PhysicsThread(mj::Simulate* sim, const char* filename) {
       d = mj_makeData(m);
     }
     if (d) {
+      ApplyStartupKeyframe(m, d, *sim, startup_key_spec);
       sim->Load(m, d, filename);
 
       // lock the sim mutex
@@ -564,7 +637,7 @@ void PhysicsThread(mj::Simulate* sim, const char* filename) {
     }
   }
 
-  PhysicsLoop(*sim);
+  PhysicsLoop(*sim, startup_key_spec);
 
   // delete everything we allocated
   mj_deleteData(d);
@@ -605,6 +678,35 @@ int main(int argc, char** argv) {
   // install control callback for MotionController integration
   mjcb_control = MotionControllerCallback;
 
+  const char* filename = nullptr;
+  const char* key_spec = nullptr;
+  for (int i = 1; i < argc; ++i) {
+    if (!std::strcmp(argv[i], "--help")) {
+      PrintUsage(argv[0]);
+      return 0;
+    }
+    if (!std::strcmp(argv[i], "--key")) {
+      if (i + 1 >= argc) {
+        std::printf("ERROR: --key requires a value\n");
+        PrintUsage(argv[0]);
+        return 1;
+      }
+      key_spec = argv[++i];
+      continue;
+    }
+    if (!filename) {
+      filename = argv[i];
+      continue;
+    }
+    if (!key_spec) {
+      key_spec = argv[i];
+      continue;
+    }
+    std::printf("ERROR: unknown argument '%s'\n", argv[i]);
+    PrintUsage(argv[0]);
+    return 1;
+  }
+
 #if defined(mjUSEUSD)
   // If USD is used, print the version.
   std::printf("OpenUSD version v%d.%02d\n", PXR_MINOR_VERSION, PXR_PATCH_VERSION);
@@ -625,13 +727,8 @@ int main(int argc, char** argv) {
       &cam, &opt, &pert, /* is_passive = */ false
   );
 
-  const char* filename = nullptr;
-  if (argc >  1) {
-    filename = argv[1];
-  }
-
   // start physics thread
-  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), filename);
+  std::thread physicsthreadhandle(&PhysicsThread, sim.get(), filename, key_spec);
 
   // start simulation UI loop (blocking call)
   sim->RenderLoop();

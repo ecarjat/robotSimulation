@@ -1,6 +1,6 @@
-# MuJoCo LQR Harness
+# MuJoCo Linearization Harness
 
-This harness links the STM32 `MotionController` LQR code into a MuJoCo sim loop.
+This directory now provides the `linearize_hip` tool used by the simulation LUT pipeline.
 
 ## Build
 
@@ -16,20 +16,17 @@ cmake --build build -j
 
 ```bash
 cd lqr_harness/build
-./lqr_harness --model ../../robot_planar.xml --key r50 --time 5
+./linearize_hip --model ../../myRobot/scene.xml --equilibrium-wheels --out ../../linearize_out
 ```
 
-Useful options:
-- `--no-hold-hips` disables hip hold torque.
-- `--hip-target-key` holds hips at keyframe angles (default is mid-range of joint limits).
-- `--no-ekf` disables EKF and uses direct torso kinematics for `theta/xDot`.
-- `--headless` runs without a viewer window.
-- `--fast` disables real-time sync (runs as fast as possible).
-- `--hip-kp`, `--hip-kd` tune hip hold stiffness.
-- `--u-scale` scales LQR output before sending to wheel actuators.
-- `--print 0` disables periodic logging.
+For full options:
 
-Notes:
-- The harness uses `StateEstimate` fields: `theta`, `thetaDot`, `xDot` from the MuJoCo torso.
-- `u_sum` is applied symmetrically to `act_wheel_L` and `act_wheel_R`.
-- If wheel actuator `ctrlrange` is narrow (e.g., `[-1,1]`), use `--u-scale` or widen `ctrlrange` in the XML.
+```bash
+./linearize_hip --help
+```
+
+Detailed behavior and workflow references:
+
+- `../README.md#linearize-hip-guide`
+- `../tools/README.md#lqr_sweeppy`
+- `../docs/run_lqr_pipeline.md`

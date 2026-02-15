@@ -96,16 +96,58 @@ def main():
                     help="Require max spectral radius <= this value (e.g., 0.98)")
     ap.add_argument("--allow-marginal", action="store_true",
                     help="Allow one eigenvalue within tol of 1.0 (position integrator).")
+    ap.add_argument("--strict-stability", action="store_true",
+                    help="Disable automatic marginal-mode allowance for cascaded K0 with qx=0.")
     ap.add_argument("--best-effort", action="store_true",
                     help="Always emit best candidate (min max_rho) even if unstable.")
+    ap.add_argument("--no-sign-flip", action="store_true",
+                    help="Reject candidates whose selected gains change sign across hips.")
+    ap.add_argument("--sign-gains", type=str, default="K1,K2,K3",
+                    help="Comma-separated gains to enforce sign consistency on (valid: K0,K1,K2,K3).")
+    ap.add_argument("--sign-eps", type=float, default=1e-9,
+                    help="Treat |gain| <= sign_eps as zero when checking sign consistency.")
+    ap.add_argument(
+        "--cascaded-k0",
+        action="store_true",
+        help=(
+            "Export K0 mapped for the cascaded MotionController architecture "
+            "(v_ref_from_pos = K0 * x_err). For state-dim=4, map direct LQR "
+            "K0_direct to K0_cascaded = -K0_direct / K1_direct."
+        ),
+    )
     args = ap.parse_args()
+
+    if (args.cascaded_k0
+            and args.state_dim == 4
+            and abs(args.qx) < 1e-12
+            and not args.allow_marginal
+            and not args.strict_stability):
+        args.allow_marginal = True
+        print("Info: enabling marginal stability allowance (qx=0 with --cascaded-k0).")
 
     if args.state_dim == 3:
         a_glob = "Ared3_hip_*.csv"
         b_glob = "Bred3_hip_*.csv"
+        available_gain_names = ["K1", "K2", "K3"]
     else:
         a_glob = "Ared_hip_*.csv"
         b_glob = "Bred_hip_*.csv"
+        available_gain_names = ["K0", "K1", "K2", "K3"]
+
+    sign_gain_indices = []
+    if args.no_sign_flip:
+        requested = [x.strip().upper() for x in args.sign_gains.split(",") if x.strip()]
+        if not requested:
+            raise SystemExit("--no-sign-flip requires at least one gain in --sign-gains")
+        name_to_idx = {name: i for i, name in enumerate(available_gain_names)}
+        invalid = [name for name in requested if name not in name_to_idx]
+        if invalid:
+            valid = ",".join(available_gain_names)
+            raise SystemExit(
+                f"Invalid --sign-gains entry: {','.join(invalid)} "
+                f"(state-dim={args.state_dim}, valid: {valid})"
+            )
+        sign_gain_indices = [name_to_idx[name] for name in requested]
     a_files = sorted(glob.glob(os.path.join(args.dir, a_glob)))
     b_files = sorted(glob.glob(os.path.join(args.dir, b_glob)))
     if not a_files or not b_files:
@@ -184,6 +226,9 @@ def main():
             for us in u_scales:
                 stable_all = True
                 max_rho = 0.0
+                max_score_rho = 0.0
+                sign_consistent = True
+                k_samples = []
                 for hip, (A, B) in mats.items():
                     B_eff = B * us
                     Kp = dlqr(A, B_eff, Q, R)
@@ -191,33 +236,68 @@ def main():
                         stable_all = False
                         break
                     K = Kp * us  # back to real input u
+                    k_samples.append((hip, K.flatten()))
                     Acl = A - B @ K
                     eig = np.linalg.eigvals(Acl)
-                    rho = max(abs(eig))
+                    abs_eig = np.array([abs(v) for v in eig], dtype=float)
+                    rho = float(np.max(abs_eig))
                     max_rho = max(max_rho, rho)
                     if args.rho_target is not None and rho > args.rho_target:
                         stable_all = False
                         break
                     if args.allow_marginal:
                         # Allow at most one eigenvalue slightly above 1.0 within tolerance.
-                        above = sum(1 for v in eig if abs(v) > 1.0 + args.rho_tol)
-                        near = sum(1 for v in eig if 1.0 - args.rho_tol <= abs(v) <= 1.0 + args.rho_tol)
+                        above = int(np.sum(abs_eig > 1.0 + args.rho_tol))
+                        near_mask = np.logical_and(abs_eig >= 1.0 - args.rho_tol, abs_eig <= 1.0 + args.rho_tol)
+                        near = int(np.sum(near_mask))
                         if above > 0:
                             stable_all = False
                             break
                         if near > 1:
                             stable_all = False
                             break
+                        if near >= 1:
+                            # Drop one marginal mode (typically x-position integrator)
+                            marginal_idx = int(np.argmin(np.abs(abs_eig - 1.0)))
+                            score_eigs = np.delete(abs_eig, marginal_idx)
+                        else:
+                            score_eigs = abs_eig
+                        score_rho = float(np.max(score_eigs)) if score_eigs.size else 0.0
                     else:
                         if rho >= 1.0:
                             stable_all = False
                             break
-                results.append((qs, rs, us, stable_all, max_rho))
-                if best_any is None or max_rho < best_any[4]:
-                    best_any = (qs, rs, us, stable_all, max_rho)
+                        score_rho = rho
+                    max_score_rho = max(max_score_rho, score_rho)
+                if stable_all and args.no_sign_flip:
+                    # Enforce consistent sign for selected gains across all hips.
+                    for gain_idx in sign_gain_indices:
+                        ref_sign = 0
+                        for _, kv in sorted(k_samples, key=lambda x: x[0]):
+                            val = float(kv[gain_idx])
+                            if abs(val) <= args.sign_eps:
+                                continue
+                            sgn = 1 if val > 0.0 else -1
+                            if ref_sign == 0:
+                                ref_sign = sgn
+                            elif sgn != ref_sign:
+                                sign_consistent = False
+                                break
+                        if not sign_consistent:
+                            break
+                    if not sign_consistent:
+                        stable_all = False
+
+                results.append((qs, rs, us, stable_all, max_rho, max_score_rho, sign_consistent))
+
+                # best_any is fallback for --best-effort. If sign consistency is requested,
+                # keep fallback within sign-consistent candidates.
+                if (not args.no_sign_flip) or sign_consistent:
+                    if best_any is None or max_score_rho < best_any[5]:
+                        best_any = (qs, rs, us, stable_all, max_rho, max_score_rho, sign_consistent)
                 if stable_all:
-                    if best is None or max_rho < best[4]:
-                        best = (qs, rs, us, stable_all, max_rho)
+                    if best is None or max_score_rho < best[5]:
+                        best = (qs, rs, us, stable_all, max_rho, max_score_rho, sign_consistent)
 
     if args.diag:
         print("Diagnostics per hip:")
@@ -235,9 +315,12 @@ def main():
 
     # write summary
     with open(args.out, "w") as f:
-        f.write("q_scale,r_scale,u_scale,stable_all,max_spectral_radius\n")
-        for qs, rs, us, stable_all, max_rho in results:
-            f.write(f"{qs},{rs},{us},{int(stable_all)},{max_rho:.6f}\n")
+        f.write("q_scale,r_scale,u_scale,stable_all,max_spectral_radius,max_selection_radius,sign_consistent\n")
+        for qs, rs, us, stable_all, max_rho, max_score_rho, sign_consistent in results:
+            f.write(
+                f"{qs},{rs},{us},{int(stable_all)},{max_rho:.6f},"
+                f"{max_score_rho:.6f},{int(sign_consistent)}\n"
+            )
 
     if best is None:
         print("No stable Q/R found. Check ranges.")
@@ -245,9 +328,13 @@ def main():
             return
         best = best_any
 
-    qs, rs, us, stable, max_rho = best
+    qs, rs, us, stable, max_rho, max_score_rho, sign_consistent = best
     status = "stable" if stable else "best-effort"
-    print(f"Best ({status}): q_scale={qs}, r_scale={rs}, u_scale={us}, max_rho={max_rho:.6f}")
+    print(
+        f"Best ({status}): q_scale={qs}, r_scale={rs}, u_scale={us}, "
+        f"max_rho={max_rho:.6f}, selection_rho={max_score_rho:.6f}, "
+        f"sign_consistent={int(sign_consistent)}"
+    )
 
     # write LUT for best candidate
     if args.state_dim == 3:
@@ -268,6 +355,18 @@ def main():
             if Kp is None:
                 continue
             K = (Kp * us).flatten()
+            if args.cascaded_k0 and args.state_dim == 4:
+                # MotionController cascaded form uses:
+                #   v_ref_from_pos = K0 * x_err
+                #   u_vel_term = -K1 * (v - v_ref)
+                # so the effective x gain is +K1*K0. To match direct LQR:
+                #   u_direct includes -K0_direct * x_err
+                # therefore K0_cascaded = -K0_direct / K1_direct.
+                k1 = K[1]
+                if abs(k1) > 1e-9:
+                    K[0] = -K[0] / k1
+                else:
+                    K[0] = 0.0
             eq = match_eq(hip)
             if eq is None:
                 if args.require_eq:

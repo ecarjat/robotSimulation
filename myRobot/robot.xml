@@ -1,188 +1,186 @@
-<?xml version="1.0" ?>
-<!-- Generated using onshape-to-robot -->
-<!-- Onshape https://cad.onshape.com/documents/6e8a915e9b82730078512f3c/w/f59c9b408c08fcde5add7934/e/9ec4716578ac9422c1d6f6fc -->
 <mujoco model="myRobot">
-  <compiler angle="radian" meshdir="assets" autolimits="true"/>
+  <compiler angle="radian" meshdir="assets" autolimits="true" />
   <default>
     <default class="myRobot">
-      <joint frictionloss="0.1" armature="0.005"/>
-      <position kp="50" dampratio="1"/>
+      <joint frictionloss="0.1" armature="0.005" />
+      <position kp="50" dampratio="1" />
+      <default class="hip_position">
+        <!-- Hip position actuators with gear=5:
+             - gear=5: actuator_length = joint_angle * 5 (transmission scaling)
+             - inheritrange=5: ctrlrange = joint_range * 5 (to access full joint ROM)
+             - Control: ctrl = joint_angle * 5 to reach desired joint angle
+             - Provides force multiplication to support torso weight -->
+        <position inheritrange="5" gear="5" />
+      </default>
       <default class="visual">
-        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+        <geom type="mesh" contype="0" conaffinity="0" group="2" />
       </default>
       <default class="collision">
-        <geom group="3" margin="0.002"/>
+        <geom group="3" margin="0.002" />
       </default>
       <default class="wheel_contact">
-        <geom type="cylinder" group="3" size="0.08547 0.03"
-          friction="1.2 0.03 0.001" condim="4"
-          solref="0.03 2" solimp="0.90 0.95 0.001 0.5 2"
-          priority="1"/>
+        <geom type="cylinder" group="3" size="0.08547 0.03" friction="1.2 0.03 0.001" condim="4" solref="0.03 2" solimp="0.90 0.95 0.001 0.5 2" priority="1" />
       </default>
     </default>
   </default>
-  <!-- Additional keyframes.xml -->
-  <keyframe>
-    <key name="r0" qpos="0.000000 0.000000 0.557141 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000"/>
-  </keyframe>
   <worldbody>
-    <!-- Link torso -->
+
     <body name="torso" pos="0 0 0" quat="1 0 0 0" childclass="myRobot">
-      <freejoint name="torso_freejoint"/>
-      <inertial pos="-0.0816661 0.140181 -0.00438295" mass="3.51254" fullinertia="0.0331024 0.0466382 0.0674852 7.82964e-05 -0.00878896 1.13992e-05"/>
-      <!-- Part torso_parts -->
-      <geom type="mesh" class="visual" pos="-0.0816661 0.140181 -0.00438295" quat="1 0 0 0" mesh="torso_visual" material="torso_visual_material"/>
-      <geom type="mesh" class="collision" pos="-0.0816661 0.140181 -0.00438295" quat="1 0 0 0" mesh="torso_collision" material="torso_collision_material"/>
-      <!-- Frame closing_hip_L_2 -->
-      <site group="3" name="closing_hip_L_2" pos="0.09893 0.015 0.11576" quat="0.707107 0.707107 -0 -0"/>
-      <!-- Frame closing_hip_L_2_z -->
-      <site group="3" name="closing_hip_L_2_z" pos="0.09893 -0.085 0.11576" quat="0.707107 0.707107 -0 -0"/>
-      <!-- Frame closing_hip_R_1 -->
-      <site group="3" name="closing_hip_R_1" pos="0.09893 0.205 0.11576" quat="0.707107 -0.707107 0 0"/>
-      <!-- Frame closing_hip_R_1_z -->
-      <site group="3" name="closing_hip_R_1_z" pos="0.09893 0.305 0.11576" quat="0.707107 -0.707107 0 0"/>
-      <!-- IMU mounting site for simulated sensors -->
-      <site group="3" name="imu" pos="0 0 0" quat="1 0 0 0"/>
-      <!-- Link upperlegouterassembly -->
+      <freejoint name="torso_freejoint" />
+      <inertial pos="-0.0816661 0.140181 -0.00438295" mass="3.51254" fullinertia="0.0331024 0.0466382 0.0674852 7.82964e-05 -0.00878896 1.13992e-05" />
+
+      <geom type="mesh" class="visual" pos="-0.0816661 0.140181 -0.00438295" quat="1 0 0 0" mesh="torso_visual" material="torso_visual_material" />
+      <geom type="mesh" class="collision" pos="-0.0816661 0.140181 -0.00438295" quat="1 0 0 0" mesh="torso_collision" material="torso_collision_material" />
+
+      <site group="3" name="closing_hip_L_2" pos="0.09893 0.015 0.11576" quat="0.707107 0.707107 -0 -0" />
+
+      <site group="3" name="closing_hip_L_2_z" pos="0.09893 -0.085 0.11576" quat="0.707107 0.707107 -0 -0" />
+
+      <site group="3" name="closing_hip_R_1" pos="0.09893 0.205 0.11576" quat="0.707107 -0.707107 0 0" />
+
+      <site group="3" name="closing_hip_R_1_z" pos="0.09893 0.305 0.11576" quat="0.707107 -0.707107 0 0" />
+
+      <site group="3" name="imu" pos="0 0 0" quat="1 0 0 0" />
+
       <body name="upperlegouterassembly" pos="-0 0 0" quat="0.301439 -0.301439 0.639636 0.639636">
-        <!-- Joint from torso to upperlegouterassembly -->
-        <joint axis="0 0 1" name="hip_L" type="hinge" range="-0.26999999999999996 0.375"/>
-        <inertial pos="8.98038e-06 -0.182861 0.0409122" mass="0.154117" fullinertia="0.0044628 0.000449229 0.00406298 -2.05163e-07 6.716e-08 0.000113287"/>
-        <!-- Part upperlegouterassembly_parts -->
-        <geom type="mesh" class="visual" pos="8.98038e-06 -0.182861 0.0409122" quat="0.301439 0.301439 -0.639636 -0.639636" mesh="upperlegouterassembly_visual" material="upperlegouterassembly_visual_material"/>
-        <geom type="mesh" class="collision" pos="8.98038e-06 -0.182861 0.0409122" quat="0.301439 0.301439 -0.639636 -0.639636" mesh="upperlegouterassembly_collision" material="upperlegouterassembly_collision_material"/>
-        <!-- Link leftkneejunctionassembly -->
+
+        <joint axis="0 0 1" name="hip_L" type="hinge" range="-0.26999999999999996 0.375" />
+        <inertial pos="8.98038e-06 -0.182861 0.0409122" mass="0.154117" fullinertia="0.0044628 0.000449229 0.00406298 -2.05163e-07 6.716e-08 0.000113287" />
+
+        <geom type="mesh" class="visual" pos="8.98038e-06 -0.182861 0.0409122" quat="0.301439 0.301439 -0.639636 -0.639636" mesh="upperlegouterassembly_visual" material="upperlegouterassembly_visual_material" />
+        <geom type="mesh" class="collision" pos="8.98038e-06 -0.182861 0.0409122" quat="0.301439 0.301439 -0.639636 -0.639636" mesh="upperlegouterassembly_collision" material="upperlegouterassembly_collision_material" />
+
         <body name="leftkneejunctionassembly" pos="-0 -0.39609 -9e-12" quat="1e-11 -0.766044 -0.642788 -8e-12">
-          <!-- Joint from upperlegouterassembly to leftkneejunctionassembly -->
-          <joint axis="0 0 1" name="passive1" type="hinge"/>
-          <inertial pos="0.0875289 0.185145 -0.0117181" mass="1.30852" fullinertia="0.039948 0.0111376 0.0460946 -0.0172089 -0.00338493 -0.00722469"/>
-          <!-- Part leftkneejunctionassembly_parts -->
-          <geom type="mesh" class="visual" pos="0.0875289 0.185145 -0.0117181" quat="0.180234 -0.180234 0.683751 -0.683751" mesh="leftkneejunctionassembly_visual" material="leftkneejunctionassembly_visual_material"/>
-          <geom type="mesh" class="collision" pos="0.0875289 0.185145 -0.0117181" quat="0.180234 -0.180234 0.683751 -0.683751" mesh="leftkneejunctionassembly_collision" material="leftkneejunctionassembly_collision_material"/>
-          <!-- Link wheel_geom -->
+
+          <joint axis="0 0 1" name="passive1" type="hinge" />
+          <inertial pos="0.0875289 0.185145 -0.0117181" mass="1.30852" fullinertia="0.039948 0.0111376 0.0460946 -0.0172089 -0.00338493 -0.00722469" />
+
+          <geom type="mesh" class="visual" pos="0.0875289 0.185145 -0.0117181" quat="0.180234 -0.180234 0.683751 -0.683751" mesh="leftkneejunctionassembly_visual" material="leftkneejunctionassembly_visual_material" />
+          <geom type="mesh" class="collision" pos="0.0875289 0.185145 -0.0117181" quat="0.180234 -0.180234 0.683751 -0.683751" mesh="leftkneejunctionassembly_collision" material="leftkneejunctionassembly_collision_material" />
+
           <body name="wheel_geom" pos="0.162906 0.343859 0.1178" quat="0.198966 2.6e-11 -3.1e-11 0.980006">
-            <!-- Joint from leftkneejunctionassembly to wheel_geom -->
-            <joint axis="0 0 1" name="wheel_L"/>
-            <inertial pos="1.9497e-08 1.8198e-08 -0.0360202" mass="0.428" fullinertia="0.00138082 0.00138082 0.00195297 -9.13e-10 -3.2076e-08 -4.525e-09"/>
-            <!-- Part wheel_geom_parts -->
-            <geom type="mesh" class="visual" pos="1.9497e-08 1.8198e-08 -0.0360202" quat="0.63422 -0.63422 -0.312674 0.312674" mesh="wheel_geom_visual" material="wheel_geom_visual_material"/>
-            <geom type="mesh" class="collision" pos="1.9497e-08 1.8198e-08 -0.0360202" quat="0.63422 -0.63422 -0.312674 0.312674" mesh="wheel_geom_collision" material="wheel_geom_collision_material" contype="0" conaffinity="0"/>
-            <geom name="wheel_contact_L" class="wheel_contact" pos="0 0 0"/>
-            <!-- Frame W_L -->
-            <site group="3" name="W_L" pos="0 0 0" quat="1 -0 0 -0"/>
+
+            <joint axis="0 0 1" name="wheel_L" />
+            <inertial pos="1.9497e-08 1.8198e-08 -0.0360202" mass="0.428" fullinertia="0.00138082 0.00138082 0.00195297 -9.13e-10 -3.2076e-08 -4.525e-09" />
+
+            <geom type="mesh" class="visual" pos="1.9497e-08 1.8198e-08 -0.0360202" quat="0.63422 -0.63422 -0.312674 0.312674" mesh="wheel_geom_visual" material="wheel_geom_visual_material" />
+            <geom type="mesh" class="collision" pos="1.9497e-08 1.8198e-08 -0.0360202" quat="0.63422 -0.63422 -0.312674 0.312674" mesh="wheel_geom_collision" material="wheel_geom_collision_material" contype="0" conaffinity="0" />
+            <geom name="wheel_contact_L" class="wheel_contact" pos="0 0 0" />
+
+            <site group="3" name="W_L" pos="0 0 0" quat="1 -0 0 -0" />
           </body>
-          <!-- Link linkassembly -->
+
           <body name="linkassembly" pos="-0.0276075 -0.065478 -0.015" quat="0.258531 0 0 -0.966003">
-            <!-- Joint from leftkneejunctionassembly to linkassembly -->
-            <joint axis="0 0 1" name="passive2" type="hinge"/>
-            <inertial pos="-0.130199 0.163248 -0.0294862" mass="0.175426" fullinertia="0.00423293 0.00272276 0.00681813 0.00330969 3.14076e-07 -3.938e-07"/>
-            <!-- Part linkassembly_parts -->
-            <geom type="mesh" class="visual" pos="-0.130199 0.163248 -0.0294862" quat="0.707102 -0.707102 0.0026638 -0.0026638" mesh="linkassembly_visual" material="linkassembly_visual_material"/>
-            <geom type="mesh" class="collision" pos="-0.130199 0.163248 -0.0294862" quat="0.707102 -0.707102 0.0026638 -0.0026638" mesh="linkassembly_collision" material="linkassembly_collision_material"/>
-            <!-- Frame closing_hip_L_1 -->
-            <site group="3" name="closing_hip_L_1" pos="-0.260397 0.326496 0" quat="1 -0 0 -0"/>
-            <!-- Frame closing_hip_L_1_z -->
-            <site group="3" name="closing_hip_L_1_z" pos="-0.260397 0.326496 0.1" quat="1 -0 0 -0"/>
+
+            <joint axis="0 0 1" name="passive2" type="hinge" />
+            <inertial pos="-0.130199 0.163248 -0.0294862" mass="0.175426" fullinertia="0.00423293 0.00272276 0.00681813 0.00330969 3.14076e-07 -3.938e-07" />
+
+            <geom type="mesh" class="visual" pos="-0.130199 0.163248 -0.0294862" quat="0.707102 -0.707102 0.0026638 -0.0026638" mesh="linkassembly_visual" material="linkassembly_visual_material" />
+            <geom type="mesh" class="collision" pos="-0.130199 0.163248 -0.0294862" quat="0.707102 -0.707102 0.0026638 -0.0026638" mesh="linkassembly_collision" material="linkassembly_collision_material" />
+
+            <site group="3" name="closing_hip_L_1" pos="-0.260397 0.326496 0" quat="1 -0 0 -0" />
+
+            <site group="3" name="closing_hip_L_1_z" pos="-0.260397 0.326496 0.1" quat="1 -0 0 -0" />
           </body>
         </body>
       </body>
-      <!-- Link upperlegouterassembly_2 -->
+
       <body name="upperlegouterassembly_2" pos="0 0.294 -0" quat="0.301439 -0.301439 0.639636 0.639636">
-        <!-- Joint from torso to upperlegouterassembly_2 -->
-        <joint axis="0 0 1" name="hip_R" type="hinge" range="-0.2700000000000001 0.3749999999999999"/>
-        <inertial pos="0.000136949 -0.182862 -0.0559122" mass="0.154117" fullinertia="0.00446279 0.000449235 0.00406298 -2.42285e-06 1.04887e-06 -0.000113287"/>
-        <!-- Part upperlegouterassembly_2_parts -->
-        <geom type="mesh" class="visual" pos="0.000136949 -0.182862 -0.0559122" quat="0.301439 0.301439 -0.639636 -0.639636" mesh="upperlegouterassembly_2_visual" material="upperlegouterassembly_2_visual_material"/>
-        <geom type="mesh" class="collision" pos="0.000136949 -0.182862 -0.0559122" quat="0.301439 0.301439 -0.639636 -0.639636" mesh="upperlegouterassembly_2_collision" material="upperlegouterassembly_2_collision_material"/>
-        <!-- Link rightkneejunctionassembly -->
+
+        <joint axis="0 0 1" name="hip_R" type="hinge" range="-0.2700000000000001 0.3749999999999999" />
+        <inertial pos="0.000136949 -0.182862 -0.0559122" mass="0.154117" fullinertia="0.00446279 0.000449235 0.00406298 -2.42285e-06 1.04887e-06 -0.000113287" />
+
+        <geom type="mesh" class="visual" pos="0.000136949 -0.182862 -0.0559122" quat="0.301439 0.301439 -0.639636 -0.639636" mesh="upperlegouterassembly_2_visual" material="upperlegouterassembly_2_visual_material" />
+        <geom type="mesh" class="collision" pos="0.000136949 -0.182862 -0.0559122" quat="0.301439 0.301439 -0.639636 -0.639636" mesh="upperlegouterassembly_2_collision" material="upperlegouterassembly_2_collision_material" />
+
         <body name="rightkneejunctionassembly" pos="-0 -0.39609 -0.015" quat="0.766044 1e-11 -8e-12 0.642788">
-          <!-- Joint from upperlegouterassembly_2 to rightkneejunctionassembly -->
-          <joint axis="0 0 1" name="passive4" type="hinge"/>
-          <inertial pos="0.0873713 -0.184839 -0.0113972" mass="1.30751" fullinertia="0.0400322 0.0110011 0.0460653 0.0170854 -0.00336177 0.00726039"/>
-          <!-- Part rightkneejunctionassembly_parts -->
-          <geom type="mesh" class="visual" pos="0.0873713 -0.184839 -0.0113972" quat="0.180234 0.180234 0.683751 0.683751" mesh="rightkneejunctionassembly_visual" material="rightkneejunctionassembly_visual_material"/>
-          <geom type="mesh" class="collision" pos="0.0873713 -0.184839 -0.0113972" quat="0.180234 0.180234 0.683751 0.683751" mesh="rightkneejunctionassembly_collision" material="rightkneejunctionassembly_collision_material"/>
-          <!-- Link wheel_geom_2 -->
+
+          <joint axis="0 0 1" name="passive4" type="hinge" />
+          <inertial pos="0.0873713 -0.184839 -0.0113972" mass="1.30751" fullinertia="0.0400322 0.0110011 0.0460653 0.0170854 -0.00336177 0.00726039" />
+
+          <geom type="mesh" class="visual" pos="0.0873713 -0.184839 -0.0113972" quat="0.180234 0.180234 0.683751 0.683751" mesh="rightkneejunctionassembly_visual" material="rightkneejunctionassembly_visual_material" />
+          <geom type="mesh" class="collision" pos="0.0873713 -0.184839 -0.0113972" quat="0.180234 0.180234 0.683751 0.683751" mesh="rightkneejunctionassembly_collision" material="rightkneejunctionassembly_collision_material" />
+
           <body name="wheel_geom_2" pos="0.161948 -0.344052 0.1178" quat="2.242e-09 0.211732 -0.977328 3.83e-10">
-            <!-- Joint from rightkneejunctionassembly to wheel_geom_2 -->
-            <joint axis="0 0 1" name="wheel_R"/>
-            <inertial pos="1.9497e-08 -1.8198e-08 0.0360202" mass="0.428" fullinertia="0.00138082 0.00138082 0.00195297 9.13e-10 3.2076e-08 -4.525e-09"/>
-            <!-- Part wheel_geom_2_parts -->
-            <geom type="mesh" class="visual" pos="1.9497e-08 -1.8198e-08 0.0360202" quat="0.630088 -0.630088 -0.32092 0.32092" mesh="wheel_geom_2_visual" material="wheel_geom_2_visual_material"/>
-            <geom type="mesh" class="collision" pos="1.9497e-08 -1.8198e-08 0.0360202" quat="0.630088 -0.630088 -0.32092 0.32092" mesh="wheel_geom_2_collision" material="wheel_geom_2_collision_material" contype="0" conaffinity="0"/>
-            <geom name="wheel_contact_R" class="wheel_contact" pos="0 0 0"/>
-            <!-- Frame W_R -->
-            <site group="3" name="W_R" pos="0 0 0" quat="0 1 0 0"/>
+
+            <joint axis="0 0 1" name="wheel_R" />
+            <inertial pos="1.9497e-08 -1.8198e-08 0.0360202" mass="0.428" fullinertia="0.00138082 0.00138082 0.00195297 9.13e-10 3.2076e-08 -4.525e-09" />
+
+            <geom type="mesh" class="visual" pos="1.9497e-08 -1.8198e-08 0.0360202" quat="0.630088 -0.630088 -0.32092 0.32092" mesh="wheel_geom_2_visual" material="wheel_geom_2_visual_material" />
+            <geom type="mesh" class="collision" pos="1.9497e-08 -1.8198e-08 0.0360202" quat="0.630088 -0.630088 -0.32092 0.32092" mesh="wheel_geom_2_collision" material="wheel_geom_2_collision_material" contype="0" conaffinity="0" />
+            <geom name="wheel_contact_R" class="wheel_contact" pos="0 0 0" />
+
+            <site group="3" name="W_R" pos="0 0 0" quat="0 1 0 0" />
           </body>
-          <!-- Link linkassembly_2 -->
+
           <body name="linkassembly_2" pos="-0.0276075 0.065478 -0.015" quat="0.545695 -0 0 0.837984">
-            <!-- Joint from rightkneejunctionassembly to linkassembly_2 -->
-            <joint axis="0 0 1" name="passive3" type="hinge"/>
-            <inertial pos="-0.00872815 -0.208628 -0.0295138" mass="0.175426" fullinertia="0.00686071 9.49726e-05 0.00681813 -0.000283548 -2.1055e-08 -5.03268e-07"/>
-            <!-- Part linkassembly_2_parts -->
-            <geom type="mesh" class="visual" pos="-0.00872815 -0.208628 -0.0295138" quat="0.671325 0.671325 0.222086 0.222086" mesh="linkassembly_2_visual" material="linkassembly_2_visual_material"/>
-            <geom type="mesh" class="collision" pos="-0.00872815 -0.208628 -0.0295138" quat="0.671325 0.671325 0.222086 0.222086" mesh="linkassembly_2_collision" material="linkassembly_2_collision_material"/>
-            <!-- Frame closing_hip_R_2 -->
-            <site group="3" name="closing_hip_R_2" pos="-0.0174563 -0.417255 -0.059" quat="0.950574 1.1e-11 -6e-12 0.310498"/>
-            <!-- Frame closing_hip_R_2_z -->
-            <site group="3" name="closing_hip_R_2_z" pos="-0.0174563 -0.417255 0.041" quat="0.950574 1.1e-11 -6e-12 0.310498"/>
+
+            <joint axis="0 0 1" name="passive3" type="hinge" />
+            <inertial pos="-0.00872815 -0.208628 -0.0295138" mass="0.175426" fullinertia="0.00686071 9.49726e-05 0.00681813 -0.000283548 -2.1055e-08 -5.03268e-07" />
+
+            <geom type="mesh" class="visual" pos="-0.00872815 -0.208628 -0.0295138" quat="0.671325 0.671325 0.222086 0.222086" mesh="linkassembly_2_visual" material="linkassembly_2_visual_material" />
+            <geom type="mesh" class="collision" pos="-0.00872815 -0.208628 -0.0295138" quat="0.671325 0.671325 0.222086 0.222086" mesh="linkassembly_2_collision" material="linkassembly_2_collision_material" />
+
+            <site group="3" name="closing_hip_R_2" pos="-0.0174563 -0.417255 -0.059" quat="0.950574 1.1e-11 -6e-12 0.310498" />
+
+            <site group="3" name="closing_hip_R_2_z" pos="-0.0174563 -0.417255 0.041" quat="0.950574 1.1e-11 -6e-12 0.310498" />
           </body>
         </body>
       </body>
     </body>
   </worldbody>
   <asset>
-    <mesh file="merged/upperlegouterassembly_2_visual.stl"/>
-    <mesh file="merged/upperlegouterassembly_visual.stl"/>
-    <mesh file="merged/torso_visual.stl"/>
-    <mesh file="merged/linkassembly_2_visual.stl"/>
-    <mesh file="merged/wheel_geom_2_collision.stl"/>
-    <mesh file="merged/rightkneejunctionassembly_visual.stl"/>
-    <mesh file="merged/linkassembly_visual.stl"/>
-    <mesh file="merged/wheel_geom_2_visual.stl"/>
-    <mesh file="merged/upperlegouterassembly_collision.stl"/>
-    <mesh file="merged/wheel_geom_collision.stl"/>
-    <mesh file="merged/linkassembly_collision.stl"/>
-    <mesh file="merged/rightkneejunctionassembly_collision.stl"/>
-    <mesh file="merged/leftkneejunctionassembly_collision.stl"/>
-    <mesh file="merged/leftkneejunctionassembly_visual.stl"/>
-    <mesh file="merged/wheel_geom_visual.stl"/>
-    <mesh file="merged/linkassembly_2_collision.stl"/>
-    <mesh file="merged/upperlegouterassembly_2_collision.stl"/>
-    <mesh file="merged/torso_collision.stl"/>
-    <material name="torso_visual_material" rgba="0.539052 0.515684 0.338651 1"/>
-    <material name="torso_collision_material" rgba="0.539052 0.515684 0.338651 1"/>
-    <material name="upperlegouterassembly_visual_material" rgba="0.058219 0.216998 0.391655 1"/>
-    <material name="upperlegouterassembly_collision_material" rgba="0.058219 0.216998 0.391655 1"/>
-    <material name="leftkneejunctionassembly_visual_material" rgba="0.700374 0.464096 0.392784 1"/>
-    <material name="leftkneejunctionassembly_collision_material" rgba="0.700374 0.464096 0.392784 1"/>
-    <material name="wheel_geom_visual_material" rgba="0.972549 0.529412 0.00392157 1"/>
-    <material name="wheel_geom_collision_material" rgba="0.972549 0.529412 0.00392157 1"/>
-    <material name="linkassembly_visual_material" rgba="0.37621 0.311382 0.528221 1"/>
-    <material name="linkassembly_collision_material" rgba="0.37621 0.311382 0.528221 1"/>
-    <material name="upperlegouterassembly_2_visual_material" rgba="0.058219 0.216998 0.391655 1"/>
-    <material name="upperlegouterassembly_2_collision_material" rgba="0.058219 0.216998 0.391655 1"/>
-    <material name="rightkneejunctionassembly_visual_material" rgba="0.4734 0.569499 0.464907 1"/>
-    <material name="rightkneejunctionassembly_collision_material" rgba="0.4734 0.569499 0.464907 1"/>
-    <material name="wheel_geom_2_visual_material" rgba="0.972549 0.529412 0.00392157 1"/>
-    <material name="wheel_geom_2_collision_material" rgba="0.972549 0.529412 0.00392157 1"/>
-    <material name="linkassembly_2_visual_material" rgba="0.37621 0.311382 0.528221 1"/>
-    <material name="linkassembly_2_collision_material" rgba="0.37621 0.311382 0.528221 1"/>
+    <mesh file="merged/upperlegouterassembly_2_visual.stl" />
+    <mesh file="merged/upperlegouterassembly_visual.stl" />
+    <mesh file="merged/torso_visual.stl" />
+    <mesh file="merged/linkassembly_2_visual.stl" />
+    <mesh file="merged/wheel_geom_2_collision.stl" />
+    <mesh file="merged/rightkneejunctionassembly_visual.stl" />
+    <mesh file="merged/linkassembly_visual.stl" />
+    <mesh file="merged/wheel_geom_2_visual.stl" />
+    <mesh file="merged/upperlegouterassembly_collision.stl" />
+    <mesh file="merged/wheel_geom_collision.stl" />
+    <mesh file="merged/linkassembly_collision.stl" />
+    <mesh file="merged/rightkneejunctionassembly_collision.stl" />
+    <mesh file="merged/leftkneejunctionassembly_collision.stl" />
+    <mesh file="merged/leftkneejunctionassembly_visual.stl" />
+    <mesh file="merged/wheel_geom_visual.stl" />
+    <mesh file="merged/linkassembly_2_collision.stl" />
+    <mesh file="merged/upperlegouterassembly_2_collision.stl" />
+    <mesh file="merged/torso_collision.stl" />
+    <material name="torso_visual_material" rgba="0.539052 0.515684 0.338651 1" />
+    <material name="torso_collision_material" rgba="0.539052 0.515684 0.338651 1" />
+    <material name="upperlegouterassembly_visual_material" rgba="0.058219 0.216998 0.391655 1" />
+    <material name="upperlegouterassembly_collision_material" rgba="0.058219 0.216998 0.391655 1" />
+    <material name="leftkneejunctionassembly_visual_material" rgba="0.700374 0.464096 0.392784 1" />
+    <material name="leftkneejunctionassembly_collision_material" rgba="0.700374 0.464096 0.392784 1" />
+    <material name="wheel_geom_visual_material" rgba="0.972549 0.529412 0.00392157 1" />
+    <material name="wheel_geom_collision_material" rgba="0.972549 0.529412 0.00392157 1" />
+    <material name="linkassembly_visual_material" rgba="0.37621 0.311382 0.528221 1" />
+    <material name="linkassembly_collision_material" rgba="0.37621 0.311382 0.528221 1" />
+    <material name="upperlegouterassembly_2_visual_material" rgba="0.058219 0.216998 0.391655 1" />
+    <material name="upperlegouterassembly_2_collision_material" rgba="0.058219 0.216998 0.391655 1" />
+    <material name="rightkneejunctionassembly_visual_material" rgba="0.4734 0.569499 0.464907 1" />
+    <material name="rightkneejunctionassembly_collision_material" rgba="0.4734 0.569499 0.464907 1" />
+    <material name="wheel_geom_2_visual_material" rgba="0.972549 0.529412 0.00392157 1" />
+    <material name="wheel_geom_2_collision_material" rgba="0.972549 0.529412 0.00392157 1" />
+    <material name="linkassembly_2_visual_material" rgba="0.37621 0.311382 0.528221 1" />
+    <material name="linkassembly_2_collision_material" rgba="0.37621 0.311382 0.528221 1" />
   </asset>
   <actuator>
-    <position class="myRobot" name="hip_L" joint="hip_L" inheritrange="1" gear="5"/>
-    <motor class="myRobot" name="wheel_L" joint="wheel_L" gear="-1"/>
-    <position class="myRobot" name="hip_R" joint="hip_R" inheritrange="1" gear="5"/>
-    <motor class="myRobot" name="wheel_R" joint="wheel_R"  gear="-1"/>
+    <position class="hip_position" name="hip_L" joint="hip_L" />
+    <motor class="myRobot" name="wheel_L" joint="wheel_L" gear="1" ctrllimited="true" ctrlrange="-34.67 34.67" />
+    <position class="hip_position" name="hip_R" joint="hip_R" />
+    <motor class="myRobot" name="wheel_R" joint="wheel_R" gear="1" ctrllimited="true" ctrlrange="-34.67 34.67" />
   </actuator>
   <sensor>
-    <gyro name="gyro" site="imu"/>
-    <accelerometer name="acc" site="imu"/>
+    <gyro name="gyro" site="imu" />
+    <accelerometer name="acc" site="imu" />
   </sensor>
   <equality>
-    <connect site1="closing_hip_L_1" site2="closing_hip_L_2" solref="0.002 1" solimp="0.95 0.99 0.001"/>
-    <connect site1="closing_hip_L_1_z" site2="closing_hip_L_2_z" solref="0.002 1" solimp="0.95 0.99 0.001"/>
-    <connect site1="closing_hip_R_1" site2="closing_hip_R_2" solref="0.002 1" solimp="0.95 0.99 0.001"/>
-    <connect site1="closing_hip_R_1_z" site2="closing_hip_R_2_z" solref="0.002 1" solimp="0.95 0.99 0.001"/>
+    <connect site1="closing_hip_L_1" site2="closing_hip_L_2" solref="0.002 1" solimp="0.95 0.99 0.001" />
+    <connect site1="closing_hip_L_1_z" site2="closing_hip_L_2_z" solref="0.002 1" solimp="0.95 0.99 0.001" />
+    <connect site1="closing_hip_R_1" site2="closing_hip_R_2" solref="0.002 1" solimp="0.95 0.99 0.001" />
+    <connect site1="closing_hip_R_1_z" site2="closing_hip_R_2_z" solref="0.002 1" solimp="0.95 0.99 0.001" />
   </equality>
 </mujoco>

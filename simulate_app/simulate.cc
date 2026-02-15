@@ -1798,6 +1798,16 @@ void UiEvent(mjuiState* state) {
       MotionControllerToggle();
       break;
 
+    case 'w':                   // toggle wheel control
+    case 'W':
+      WheelControlToggle();
+      break;
+
+    case 'f':                   // toggle static measurement mode
+    case 'F':
+      StaticModeToggle();
+      break;
+
     case 'i':                   // raise hips to next LUT angle
     case 'I':
       MotionControllerStepHipTarget(+1);

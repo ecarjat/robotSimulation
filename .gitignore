@@ -2,3 +2,6 @@ build/
 mujoco.framework/
 .cache/
 .env
+linearize_out/
+__pycache__/
+*.csv

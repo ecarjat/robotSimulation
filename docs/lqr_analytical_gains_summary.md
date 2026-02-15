@@ -14,7 +14,7 @@ Successfully derived analytical LQR gains from first-principles linearization us
 ## Methodology
 
 ### 1. COM-Aligned Equilibrium Calculation
-- **Tool:** `compute_com.cc` with settling detection
+- **Tool:** `lqr_harness/linearize_hip.cpp` (`--equilibrium-wheels`)
 - **Process:** For each hip angle, fix robot base, allow hips to reach target, wait for system to settle, measure COM position relative to wheel contact
 - **Result:** θ_eq = -atan2(COM_rel_x, COM_rel_z)
 - **Validation:** Matches manual measurements from static mode within 0.15°
@@ -178,7 +178,6 @@ cd simulate_app
 ### Modified
 - `lqr_harness/linearize_hip.cpp` - Replaced binary search with geometric θ_eq
 - `simulate_app/motion_controller_bridge.cc` - Static mode implementation
-- `simulate_app/compute_com.cc` - Settling detection
 
 ### Tools Used (Not Modified)
 - `tools/continuous_lqr.py` - Continuous-time LQR solver

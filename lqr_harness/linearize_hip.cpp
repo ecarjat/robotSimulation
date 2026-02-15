@@ -22,6 +22,7 @@ struct Options {
     int steps = 7;
     double eps = 1e-6;
     std::string out_dir = "linearize_out";
+    std::string write_keyframes_path;
     bool equilibrium_wheels = false;
     bool reduced_out = true;
     bool reduced_fd = false;
@@ -40,6 +41,7 @@ void usage(const char* prog) {
         "  --steps <int>      Number of samples (default: 7)\n"
         "  --eps <val>        Finite difference epsilon (default: 1e-6)\n"
         "  --out <dir>        Output directory (default: linearize_out)\n"
+        "  --write-keyframes <path>  Write equilibrium keyframes XML (mujocoinclude)\n"
         "  --equilibrium-wheels  Solve wheel ctrl to hold pose (inverse dynamics)\n"
         "  --no-reduced       Do not write reduced A/B for MotionController\n"
         "  --reduced-fd       Build reduced A/B via finite difference on reduced state\n"
@@ -89,6 +91,10 @@ bool parse_args(int argc, char** argv, Options& opt) {
         }
         if (!std::strcmp(arg, "--out") && i + 1 < argc) {
             opt.out_dir = argv[++i];
+            continue;
+        }
+        if (!std::strcmp(arg, "--write-keyframes") && i + 1 < argc) {
+            opt.write_keyframes_path = argv[++i];
             continue;
         }
         if (!std::strcmp(arg, "--equilibrium-wheels")) {
@@ -152,6 +158,52 @@ void write_eq_csv(const std::string& path,
     out << hip << "," << theta_eq << "," << u_eq << "," << tau_l << "," << tau_r << "\n";
 }
 
+struct KeyframePose {
+    std::string name;
+    std::vector<double> qpos;
+    double hip = 0.0;
+    double theta_target = 0.0;
+    double theta_actual = 0.0;
+    double wheel_contact_z_l = 0.0;
+    double wheel_contact_z_r = 0.0;
+};
+
+double clamp_ctrl(const mjModel* m, int act_id, double u) {
+    if (act_id < 0) return 0.0;
+    if (m->actuator_ctrllimited[act_id]) {
+        const double lo = m->actuator_ctrlrange[2 * act_id + 0];
+        const double hi = m->actuator_ctrlrange[2 * act_id + 1];
+        if (u < lo) return lo;
+        if (u > hi) return hi;
+    }
+    return u;
+}
+
+double position_ctrl_for_joint_target(const mjModel* m, int act_id, double joint_target) {
+    if (act_id < 0) return joint_target;
+    const double gear = m->actuator_gear[6 * act_id + 0];
+    if (std::abs(gear) < 1e-12) return joint_target;
+    return joint_target * gear;
+}
+
+void set_freejoint_pose(mjData* d, int qpos_adr, double x, double y, double z, double pitch) {
+    d->qpos[qpos_adr + 0] = x;
+    d->qpos[qpos_adr + 1] = y;
+    d->qpos[qpos_adr + 2] = z;
+    d->qpos[qpos_adr + 3] = std::cos(0.5 * pitch);
+    d->qpos[qpos_adr + 4] = 0.0;
+    d->qpos[qpos_adr + 5] = std::sin(0.5 * pitch);
+    d->qpos[qpos_adr + 6] = 0.0;
+}
+
+std::string key_name_from_hip(double hip) {
+    const char sign = (hip < 0.0) ? 'm' : 'p';
+    const int mag = static_cast<int>(std::llround(std::abs(hip) * 10000.0));
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "eq_hip_%c%04d", sign, mag);
+    return std::string(buf);
+}
+
 int actuator_id(const mjModel* m, const char* name) {
     return mj_name2id(m, mjOBJ_ACTUATOR, name);
 }
@@ -163,10 +215,13 @@ int joint_id(const mjModel* m, const char* name) {
 // Compute geometric equilibrium theta where COM is directly above wheel contact
 // This is the angle where gravitational torque is minimized
 double compute_geometric_theta_eq(mjModel* m, mjData* d,
+                                   int reset_key_id,
                                    int jnt_hip_l, int jnt_hip_r,
                                    double hip_angle) {
-    // Reset to keyframe
-    mj_resetDataKeyframe(m, d, 0);
+    (void)reset_key_id;
+    // Use a canonical reset state so geometric theta_eq is not biased by seed keyframe.
+    mj_resetData(m, d);
+    mj_forward(m, d);
 
     int qpos_hip_l = m->jnt_qposadr[jnt_hip_l];
     int qpos_hip_r = m->jnt_qposadr[jnt_hip_r];
@@ -182,7 +237,6 @@ double compute_geometric_theta_eq(mjModel* m, mjData* d,
     for (int j = 0; j < 7; j++) {
         saved_qpos[j] = d->qpos[j];
     }
-
     // Set hip actuator targets
     // For position actuators with gear: actuator_length = joint_angle * gear
     // Position servo drives: actuator_length = ctrl
@@ -345,11 +399,121 @@ static inline void set_pitch_in_qpos(mjtNum* qpos, mjtNum theta) {
     qpos[6] = 0.0;
 }
 
+bool build_equilibrium_keyframe_pose(const mjModel* m, mjData* d,
+                                     int seed_key_id,
+                                     int jnt_free, int jnt_hip_l, int jnt_hip_r,
+                                     int act_hip_l, int act_hip_r,
+                                     int act_wheel_l, int act_wheel_r,
+                                     int body_wheel_l, int body_wheel_r,
+                                     double wheel_radius,
+                                     double hip, double theta_eq,
+                                     KeyframePose* out_pose) {
+    if (!out_pose) return false;
+    if (jnt_free < 0 || jnt_hip_l < 0 || jnt_hip_r < 0 ||
+        body_wheel_l < 0 || body_wheel_r < 0) {
+        return false;
+    }
+
+    (void)seed_key_id;
+    // Canonical reset keeps generated keyframes deterministic across seed selections.
+    mj_resetData(m, d);
+    mj_forward(m, d);
+
+    const int free_qpos_adr = m->jnt_qposadr[jnt_free];
+    const int free_dof_adr = m->jnt_dofadr[jnt_free];
+    const int hip_l_qpos_adr = m->jnt_qposadr[jnt_hip_l];
+    const int hip_r_qpos_adr = m->jnt_qposadr[jnt_hip_r];
+
+    const double base_x = d->qpos[free_qpos_adr + 0];
+    const double base_y = d->qpos[free_qpos_adr + 1];
+    const double base_z_nominal = d->qpos[free_qpos_adr + 2];
+
+    d->qpos[hip_l_qpos_adr] = hip;
+    d->qpos[hip_r_qpos_adr] = hip;
+    set_freejoint_pose(d, free_qpos_adr, base_x, base_y, base_z_nominal, theta_eq);
+    mj_forward(m, d);
+
+    const double zL = d->xpos[3 * body_wheel_l + 2];
+    const double zR = d->xpos[3 * body_wheel_r + 2];
+    const double wheel_z_avg = 0.5 * (zL + zR);
+    double base_z = base_z_nominal + (wheel_radius - wheel_z_avg);
+
+    set_freejoint_pose(d, free_qpos_adr, base_x, base_y, base_z, theta_eq);
+    mj_forward(m, d);
+
+    const double hip_ctrl_L = clamp_ctrl(m, act_hip_l,
+                                         position_ctrl_for_joint_target(m, act_hip_l, hip));
+    const double hip_ctrl_R = clamp_ctrl(m, act_hip_r,
+                                         position_ctrl_for_joint_target(m, act_hip_r, hip));
+
+    // Let passive linkage/contacts settle while clamping base pose.
+    for (int step = 0; step < 600; ++step) {
+        set_freejoint_pose(d, free_qpos_adr, base_x, base_y, base_z, theta_eq);
+        for (int i = 0; i < 6; ++i) {
+            d->qvel[free_dof_adr + i] = 0.0;
+        }
+        if (act_hip_l >= 0) d->ctrl[act_hip_l] = hip_ctrl_L;
+        if (act_hip_r >= 0) d->ctrl[act_hip_r] = hip_ctrl_R;
+        if (act_wheel_l >= 0) d->ctrl[act_wheel_l] = 0.0;
+        if (act_wheel_r >= 0) d->ctrl[act_wheel_r] = 0.0;
+        mj_step(m, d);
+    }
+
+    // One more base-z correction after settling.
+    const double settled_zL = d->xpos[3 * body_wheel_l + 2];
+    const double settled_zR = d->xpos[3 * body_wheel_r + 2];
+    const double settled_avg = 0.5 * (settled_zL + settled_zR);
+    base_z += (wheel_radius - settled_avg);
+
+    set_freejoint_pose(d, free_qpos_adr, base_x, base_y, base_z, theta_eq);
+    mju_zero(d->qvel, m->nv);
+    if (act_hip_l >= 0) d->ctrl[act_hip_l] = hip_ctrl_L;
+    if (act_hip_r >= 0) d->ctrl[act_hip_r] = hip_ctrl_R;
+    if (act_wheel_l >= 0) d->ctrl[act_wheel_l] = 0.0;
+    if (act_wheel_r >= 0) d->ctrl[act_wheel_r] = 0.0;
+    mj_forward(m, d);
+
+    out_pose->name = key_name_from_hip(hip);
+    out_pose->qpos.assign(d->qpos, d->qpos + m->nq);
+    out_pose->hip = hip;
+    out_pose->theta_target = theta_eq;
+    out_pose->theta_actual = pitch_from_state(d);
+    out_pose->wheel_contact_z_l = d->xpos[3 * body_wheel_l + 2] - wheel_radius;
+    out_pose->wheel_contact_z_r = d->xpos[3 * body_wheel_r + 2] - wheel_radius;
+    return true;
+}
+
+bool write_keyframes_xml(const std::string& out_path,
+                         const std::vector<KeyframePose>& poses) {
+    std::ofstream out(out_path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+    out << "<mujocoinclude>\n";
+    out.setf(std::ios::fixed);
+    out.precision(6);
+    for (const KeyframePose& p : poses) {
+        out << "  <key name=\"" << p.name << "\" qpos=\"";
+        for (size_t i = 0; i < p.qpos.size(); ++i) {
+            out << p.qpos[i];
+            if (i + 1 < p.qpos.size()) out << " ";
+        }
+        out << "\"/>\n";
+    }
+    out << "</mujocoinclude>\n";
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     Options opt{};
     if (!parse_args(argc, argv, opt)) {
+        return 1;
+    }
+    const bool write_keyframes = !opt.write_keyframes_path.empty();
+    if (write_keyframes && !opt.equilibrium_wheels) {
+        std::fprintf(stderr, "--write-keyframes requires --equilibrium-wheels\n");
         return 1;
     }
 
@@ -375,6 +539,17 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    mjData* dkey = nullptr;
+    if (write_keyframes) {
+        dkey = mj_makeData(m);
+        if (!dkey) {
+            std::fprintf(stderr, "Failed to allocate mjData for keyframe generation\n");
+            if (dtmp) mj_deleteData(dtmp);
+            mj_deleteData(d);
+            mj_deleteModel(m);
+            return 1;
+        }
+    }
 
     if (m->opt.integrator != mjINT_EULER) {
         std::printf("Switching integrator to Euler for mjd_transitionFD\n");
@@ -385,6 +560,9 @@ int main(int argc, char** argv) {
     if (key_id >= 0) {
         mj_resetDataKeyframe(m, d, key_id);
     } else {
+        std::fprintf(stderr,
+                     "Warning: keyframe '%s' not found; using mj_resetData seed state.\n",
+                     opt.keyframe.c_str());
         mj_resetData(m, d);
     }
     mj_forward(m, d);
@@ -393,9 +571,50 @@ int main(int argc, char** argv) {
     int hip_r_id = mj_name2id(m, mjOBJ_JOINT, opt.hip_joint_r.c_str());
     if (hip_id < 0) {
         std::fprintf(stderr, "Hip joint '%s' not found\n", opt.hip_joint.c_str());
+        if (dkey) mj_deleteData(dkey);
+        if (dtmp) mj_deleteData(dtmp);
         mj_deleteData(d);
         mj_deleteModel(m);
         return 1;
+    }
+
+    std::vector<KeyframePose> generated_keyframes;
+    int eq_jnt_free = -1;
+    int eq_act_hip_l = -1;
+    int eq_act_hip_r = -1;
+    int eq_act_wheel_l = -1;
+    int eq_act_wheel_r = -1;
+    int eq_body_wheel_l = -1;
+    int eq_body_wheel_r = -1;
+    double eq_wheel_radius = 0.08547;
+    if (opt.equilibrium_wheels || write_keyframes) {
+        eq_jnt_free = joint_id(m, "torso_freejoint");
+        eq_act_hip_l = actuator_id(m, "hip_L");
+        eq_act_hip_r = actuator_id(m, "hip_R");
+        eq_act_wheel_l = actuator_id(m, "wheel_L");
+        eq_act_wheel_r = actuator_id(m, "wheel_R");
+        eq_body_wheel_l = mj_name2id(m, mjOBJ_BODY, "wheel_geom");
+        eq_body_wheel_r = mj_name2id(m, mjOBJ_BODY, "wheel_geom_2");
+        const int geom_wheel_contact_l = mj_name2id(m, mjOBJ_GEOM, "wheel_contact_L");
+        if (geom_wheel_contact_l >= 0) {
+            const double r = m->geom_size[3 * geom_wheel_contact_l + 0];
+            if (r > 0.0) eq_wheel_radius = r;
+        }
+    }
+    if (opt.equilibrium_wheels &&
+        (eq_jnt_free < 0 || eq_act_hip_l < 0 || eq_act_hip_r < 0 ||
+         eq_act_wheel_l < 0 || eq_act_wheel_r < 0 ||
+         eq_body_wheel_l < 0 || eq_body_wheel_r < 0)) {
+        std::fprintf(stderr,
+                     "Missing required joints/actuators/bodies for equilibrium solve\n");
+        if (dkey) mj_deleteData(dkey);
+        if (dtmp) mj_deleteData(dtmp);
+        mj_deleteData(d);
+        mj_deleteModel(m);
+        return 1;
+    }
+    if (write_keyframes) {
+        generated_keyframes.reserve((size_t)opt.steps);
     }
 
     std::filesystem::create_directories(opt.out_dir);
@@ -421,6 +640,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < opt.steps; ++i) {
         double t = (opt.steps <= 1) ? 0.0 : (double)i / (double)(opt.steps - 1);
         double hip = opt.hip_min + t * (opt.hip_max - opt.hip_min);
+        double sample_theta_eq = 0.0;
+        bool have_sample_theta_eq = false;
 
         d->qpos[m->jnt_qposadr[hip_id]] = hip;
         if (hip_r_id >= 0) {
@@ -435,17 +656,32 @@ int main(int argc, char** argv) {
             int act_wheel_r = actuator_id(m, "wheel_R");
 
             // Compute COM-aligned equilibrium theta (geometric calculation)
-            double theta_eq = compute_geometric_theta_eq(m, d, hip_id, hip_r_id, hip);
+            double theta_eq = compute_geometric_theta_eq(m, d, key_id, hip_id, hip_r_id, hip);
+            sample_theta_eq = theta_eq;
+            have_sample_theta_eq = true;
 
             std::printf("  hip=%.4f  theta_eq=%.6f (%.2f°)\n", hip, theta_eq, theta_eq * 57.3);
 
-            // Reset to equilibrium state
-            int qpos_hip_l = m->jnt_qposadr[hip_id];
-            int qpos_hip_r = m->jnt_qposadr[hip_r_id];
-            d->qpos[qpos_hip_l] = hip;
-            d->qpos[qpos_hip_r] = hip;
-            set_pitch_in_qpos(d->qpos, theta_eq);
-            mj_forward(m, d);
+            // Build a grounded pose before equilibrium wheel solve.
+            // Without this, some samples can be linearized with wheels off-ground,
+            // making input coupling ill-conditioned and causing gain sign flips.
+            KeyframePose op_pose;
+            if (!build_equilibrium_keyframe_pose(m, d, key_id,
+                                                 eq_jnt_free, hip_id, hip_r_id,
+                                                 eq_act_hip_l, eq_act_hip_r,
+                                                 eq_act_wheel_l, eq_act_wheel_r,
+                                                 eq_body_wheel_l, eq_body_wheel_r,
+                                                 eq_wheel_radius,
+                                                 hip, theta_eq, &op_pose)) {
+                std::fprintf(stderr,
+                             "Failed to build grounded operating-point pose for hip %.6f\n",
+                             hip);
+                if (dkey) mj_deleteData(dkey);
+                if (dtmp) mj_deleteData(dtmp);
+                mj_deleteData(d);
+                mj_deleteModel(m);
+                return 1;
+            }
 
             set_equilibrium_wheel_ctrl(m, d,
                                        hip_id, hip_r_id,
@@ -779,12 +1015,67 @@ int main(int argc, char** argv) {
                 }
             }
         }
+
+        if (write_keyframes) {
+            if (!have_sample_theta_eq) {
+                std::fprintf(stderr,
+                             "Internal error: theta_eq missing for hip %.6f while writing keyframes\n",
+                             hip);
+                if (dkey) mj_deleteData(dkey);
+                if (dtmp) mj_deleteData(dtmp);
+                mj_deleteData(d);
+                mj_deleteModel(m);
+                return 1;
+            }
+            KeyframePose pose;
+            if (!build_equilibrium_keyframe_pose(m, dkey, key_id,
+                                                 eq_jnt_free, hip_id, hip_r_id,
+                                                 eq_act_hip_l, eq_act_hip_r,
+                                                 eq_act_wheel_l, eq_act_wheel_r,
+                                                 eq_body_wheel_l, eq_body_wheel_r,
+                                                 eq_wheel_radius,
+                                                 hip, sample_theta_eq, &pose)) {
+                std::fprintf(stderr,
+                             "Failed generating keyframe pose for hip %.6f\n",
+                             hip);
+                if (dkey) mj_deleteData(dkey);
+                if (dtmp) mj_deleteData(dtmp);
+                mj_deleteData(d);
+                mj_deleteModel(m);
+                return 1;
+            }
+            generated_keyframes.push_back(pose);
+        }
     }
 
+    int rc = 0;
+    if (write_keyframes) {
+        if (!write_keyframes_xml(opt.write_keyframes_path, generated_keyframes)) {
+            std::fprintf(stderr, "Failed to write keyframes XML: %s\n",
+                         opt.write_keyframes_path.c_str());
+            rc = 1;
+        } else {
+            std::printf("Wrote %zu keyframes to %s\n",
+                        generated_keyframes.size(),
+                        opt.write_keyframes_path.c_str());
+            std::printf("%12s %10s %14s %14s %12s %12s\n",
+                        "key", "hip(rad)", "theta_tgt(rad)", "theta_out(rad)",
+                        "wheelL_z", "wheelR_z");
+            for (const KeyframePose& p : generated_keyframes) {
+                std::printf("%12s %10.6f %14.6f %14.6f %12.6f %12.6f\n",
+                            p.name.c_str(), p.hip, p.theta_target, p.theta_actual,
+                            p.wheel_contact_z_l, p.wheel_contact_z_r);
+            }
+        }
+    }
+
+    if (dkey) {
+        mj_deleteData(dkey);
+    }
     if (dtmp) {
         mj_deleteData(dtmp);
     }
     mj_deleteData(d);
     mj_deleteModel(m);
-    return 0;
+    return rc;
 }

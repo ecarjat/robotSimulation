@@ -53,34 +53,9 @@ if(NOT MUJOCO_INCLUDE_DIR OR NOT MUJOCO_LIB)
   message(FATAL_ERROR "Could not find MuJoCo headers or library in ${MUJOCO_DIR}.")
 endif()
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(GLFW REQUIRED IMPORTED_TARGET glfw3)
-
-set(FIRMWARE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../stm32Controller/firmware)
-
-add_executable(lqr_harness
-  main.cpp
-  ${FIRMWARE_DIR}/app/control/MotionController.cpp
-  ${FIRMWARE_DIR}/app/control/ekf/BalancerEKF.cpp
-  ${FIRMWARE_DIR}/tests/fakes/log_fake.c
-)
-
 add_executable(linearize_hip
   linearize_hip.cpp
 )
-
-target_include_directories(lqr_harness PRIVATE
-  ${MUJOCO_INCLUDE_DIR}
-  ${FIRMWARE_DIR}/app/control
-  ${FIRMWARE_DIR}/app/control/ekf
-  ${FIRMWARE_DIR}/app/utils
-  ${FIRMWARE_DIR}/app/drivers
-  ${FIRMWARE_DIR}/libs/TinyEKF
-)
-
-target_compile_definitions(lqr_harness PRIVATE APP_CONFIG_HOST)
-
-target_link_libraries(lqr_harness PRIVATE ${MUJOCO_LIB} PkgConfig::GLFW)
 
 target_include_directories(linearize_hip PRIVATE
   ${MUJOCO_INCLUDE_DIR}

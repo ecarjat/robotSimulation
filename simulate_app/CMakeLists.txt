@@ -70,6 +70,7 @@ set(SIMULATE_SOURCES
   glfw_dispatch.cc
   motion_controller_bridge.cc
   ${FIRMWARE_DIR}/app/control/MotionController.cpp
+  ${FIRMWARE_DIR}/app/control/StateEstimator.cpp
   ${FIRMWARE_DIR}/app/control/lqr_lut.c
   ${FIRMWARE_DIR}/app/control/ekf/BalancerEKF.cpp
   ${FIRMWARE_DIR}/tests/fakes/log_fake.c
@@ -111,6 +112,7 @@ add_executable(test_balance
   test_balance.cc
   motion_controller_bridge.cc
   ${FIRMWARE_DIR}/app/control/MotionController.cpp
+  ${FIRMWARE_DIR}/app/control/StateEstimator.cpp
   ${FIRMWARE_DIR}/app/control/lqr_lut.c
   ${FIRMWARE_DIR}/app/control/ekf/BalancerEKF.cpp
   ${FIRMWARE_DIR}/tests/fakes/log_fake.c
