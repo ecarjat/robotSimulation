@@ -176,10 +176,15 @@ TEST_CASE("Hip actuators can reach full range of motion", "[actuator][range]")
         // Get actuator gear
         mjtNum gear = m->actuator_gear[6 * act_hip];
 
-        // Test lower limit
-        {
+        // Test lower + upper limits and 5 equally spaced interior positions.
+        constexpr int kInteriorPoints = 5;
+        constexpr int kTotalPoints = kInteriorPoints + 2;  // include bounds
+        const double delta = (jnt_range[1] - jnt_range[0]) / static_cast<double>(kTotalPoints - 1);
+
+        for (int p = 0; p < kTotalPoints; ++p) {
             mj_resetDataKeyframe(m, d, 0);
-            d->ctrl[act_hip] = jnt_range[0] * gear;
+            const double target = jnt_range[0] + delta * static_cast<double>(p);
+            d->ctrl[act_hip] = target * gear;
 
             for (int step = 0; step < 2000; step++) {
                 mj_step(m, d);
@@ -187,42 +192,11 @@ TEST_CASE("Hip actuators can reach full range of motion", "[actuator][range]")
 
             int qpos_idx = m->jnt_qposadr[hip_id];
             double actual = d->qpos[qpos_idx];
+            const double margin = (p == kTotalPoints - 1) ? 0.05 : 0.01;
 
-            INFO(hip_joints[i] << " lower limit: target=" << jnt_range[0] << " actual=" << actual);
-            CHECK(actual == Catch::Approx(jnt_range[0]).margin(0.01));
-        }
-
-        // Test upper limit
-        {
-            mj_resetDataKeyframe(m, d, 0);
-            d->ctrl[act_hip] = jnt_range[1] * gear;
-
-            for (int step = 0; step < 2000; step++) {
-                mj_step(m, d);
-            }
-
-            int qpos_idx = m->jnt_qposadr[hip_id];
-            double actual = d->qpos[qpos_idx];
-
-            INFO(hip_joints[i] << " upper limit: target=" << jnt_range[1] << " actual=" << actual);
-            CHECK(actual == Catch::Approx(jnt_range[1]).margin(0.05));
-        }
-
-        // Test mid-range
-        {
-            mj_resetDataKeyframe(m, d, 0);
-            double mid = (jnt_range[0] + jnt_range[1]) * 0.5;
-            d->ctrl[act_hip] = mid * gear;
-
-            for (int step = 0; step < 2000; step++) {
-                mj_step(m, d);
-            }
-
-            int qpos_idx = m->jnt_qposadr[hip_id];
-            double actual = d->qpos[qpos_idx];
-
-            INFO(hip_joints[i] << " mid-range: target=" << mid << " actual=" << actual);
-            CHECK(actual == Catch::Approx(mid).margin(0.01));
+            INFO(hip_joints[i] << " point " << (p + 1) << "/" << kTotalPoints
+                               << ": target=" << target << " actual=" << actual);
+            CHECK(actual == Catch::Approx(target).margin(margin));
         }
     }
 

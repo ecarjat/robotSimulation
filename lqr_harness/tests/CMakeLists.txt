@@ -94,3 +94,24 @@ target_link_libraries(test_position_actuators PRIVATE
 )
 
 add_test(NAME test_position_actuators COMMAND test_position_actuators)
+
+# Test 4: theta_eq invariance to seed keyframe selection
+add_executable(test_seed_invariance
+  test_seed_invariance.cpp
+)
+
+target_include_directories(test_seed_invariance PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
+target_compile_definitions(test_seed_invariance PRIVATE
+  TEST_MODEL_PATH="${TEST_MODEL_PATH}"
+  LINEARIZE_HIP_BIN="$<TARGET_FILE:linearize_hip>"
+)
+
+target_link_libraries(test_seed_invariance PRIVATE
+  Catch2::Catch2WithMain
+  mujoco::mujoco
+)
+
+add_test(NAME test_seed_invariance COMMAND test_seed_invariance)
