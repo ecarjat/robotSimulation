@@ -2,6 +2,19 @@
 
 This README documents the core tuning tools under `tools/` used by the LQR pipeline.
 
+## Current Toolset
+
+Supported pipeline tools:
+
+- `run_lqr_pipeline.py`: end-to-end orchestrator (`linearize_hip` -> `lqr_sweep` -> per-hip `k0_sweep` -> LUT header generation)
+- `lqr_sweep.py`: selects `K1/K2/K3` (and `K0` mapping mode) from reduced models
+- `k0_sweep.py`: per-hip `K0` sweep against `test_balance`
+- `lqr_lut_to_header.py`: converts `lqr_lut.csv` to firmware header
+
+Additional analysis tool:
+
+- `continuous_lqr.py`: continuous-time LQR analysis helper (not used by the default orchestrated pipeline)
+
 ## lqr_sweep.py
 
 This section explains what `lqr_sweep.py` does, how it selects gains, and how to use its options.

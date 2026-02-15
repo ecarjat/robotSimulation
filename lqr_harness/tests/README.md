@@ -1,114 +1,82 @@
-# Linearization Test Suite
+# `linearize_hip` Test Suite
 
-This directory contains regression tests for `linearize_hip` to ensure the linearization pipeline remains correct.
+This folder contains regression tests for `/Users/emmanuelcarjat/git/robot2Wheel/simulation/lqr_harness/linearize_hip.cpp`.
 
-## Critical Finding: MuJoCo Position Actuator Gear Semantics
+## What Is Tested
 
-### The Bug
-Original code multiplied hip control by gear ratio (`ctrl = hip_angle * 5.0`), which was considered a "bug" and removed. However, tests revealed this was actually CORRECT!
+The CMake target file `/Users/emmanuelcarjat/git/robot2Wheel/simulation/lqr_harness/tests/CMakeLists.txt` defines five active tests:
 
-### MuJoCo Position Actuator Behavior with `gear` parameter
+1. `test_equilibrium_solver`
+2. `test_linearization_output`
+3. `test_position_actuators`
+4. `test_seed_invariance`
+5. `test_grounded_keyframes`
 
-For position actuators in MuJoCo:
-```xml
-<position name="hip_L" joint="hip_L" gear="5" />
-```
+These tests cover equilibrium solving, linearization quality, actuator semantics, seed-keyframe invariance, and keyframe grounding.
 
-The relationship is:
-- **Control signal:** `ctrl` (in transmission space)
-- **Joint position:** `qpos` (in joint space)
-- **Relationship:** `qpos = ctrl / gear`
+## Key Model/Control Assumption
 
-To command a joint to angle θ:
-```cpp
-d->ctrl[act_id] = θ * gear;  // Results in qpos = θ
-```
+For hip position actuators with non-unit gear, control is in actuator transmission coordinates.
 
-### Why theta_eq Varied Without Gear Multiplication
+- Transmission relation: `actuator_length = joint_angle * gear`
+- Position servo target is `ctrl = actuator_length`
+- Therefore, to command joint target `q_target`, use `ctrl = q_target * gear`.
 
-When we removed the `* 5.0` multiplication:
-- Command: `ctrl = -0.27` (thinking it sets hip to -0.27 rad)
-- Actual joint: `hip ≈ -0.27 / 5 = -0.054` rad
+The current tests and implementation assume this behavior.
 
-The equilibrium solver computed theta_eq for the *actual* hip angle (-0.054), not the intended one (-0.27). Since the robot settled at different actual hip angles for different ctrl values, theta_eq varied - but the eq files were WRONG, labeling data with incorrect hip angles!
+## Test Details
 
-### The Fix
+### `test_equilibrium_solver.cpp`
 
-Updated `linearize_hip.cpp` to detect gear ratio and apply it correctly:
-```cpp
-double gear = m->actuator_gear[6 * act_id];
-d->ctrl[act_id] = target_angle * gear;  // Now joint reaches target_angle
-```
+Checks equilibrium solve correctness and actuator handling:
 
-## Test Files
+- `theta_eq` varies monotonically over the hip sweep.
+- `theta_eq` range is non-trivial across the sampled hip values.
+- Wheel inverse-dynamics torques are near zero at computed equilibrium.
+- Gear-scaled position control drives hips to requested joint angles.
 
-### test_equilibrium_solver.cpp
-**Purpose:** Regression test for the critical equilibrium solver bug.
+### `test_linearization_output.cpp`
 
-**Key Tests:**
-1. `theta_eq varies with hip angle` - Core regression test
-   - Ensures theta_eq changes monotonically across hip range
-   - Minimum 0.57° variation required
-   - Catches gear multiplication bugs
+Checks reduced linearization matrix sanity:
 
-2. `Near-zero equilibrium torques`
-   - Validates computed equilibrium states
-   - Wheel torques should be < 1 mNm at equilibrium
+- Finite `A` and `B` values from `mjd_transitionFD`.
+- Expected reduced `B` structure and magnitudes for wheel torque input.
+- Expected reduced `A` couplings (for example, position-from-velocity and angle-from-angular-velocity terms).
+- Determinism across repeated linearization calls from the same state.
 
-3. `Position actuator gear handling`
-   - Verifies correct use of gear ratio
-   - Joint should reach commanded angle (not angle/gear)
+### `test_position_actuators.cpp`
 
-### test_linearization_output.cpp
-**Purpose:** Validates linearized state-space matrices.
+Validates MuJoCo position-actuator behavior used by this project:
 
-**Key Tests:**
-1. `Finite A, B matrices` - Basic sanity check
-2. `Bred structure` - Validates control authority vector
-   - B[3] (θ̇) > B[1] (v) > B[0] (x), B[2] (θ)
-   - Ensures controllability
-3. `Ared structure` - Validates dynamics matrix
-   - Not identity (linearization worked)
-   - Correct coupling (position←velocity, angle←angular velocity)
-4. `Linearization consistency` - Deterministic output
+- Gear-scaled control reaches target hip angles.
+- Hip joints respect limits when commanded beyond range.
+- Both hips can traverse full joint range (including bounds/interior points).
+- Behavior remains consistent with the configured gear/transmission semantics.
 
-### test_position_actuators.cpp
-**Purpose:** Documents and validates MuJoCo actuator semantics.
+### `test_seed_invariance.cpp`
 
-**Key Tests:**
-1. `Gear-aware position control` - Primary validation
-   - With `gear=5`: `ctrl = 5*θ` results in `joint = θ`
-2. `Joint limits` - Actuators respect URDF limits
-3. `Full range of motion` - Hip actuators can reach all angles
-4. `Motor vs position actuators` - Different gear semantics
+Runs `linearize_hip` twice (default seed and explicit `--key eq_hip_p0525`) and verifies all generated `theta_eq` values match exactly for each hip row. This guards against seed-dependent equilibrium drift.
 
-## Running Tests
+### `test_grounded_keyframes.cpp`
+
+Runs `linearize_hip --write-keyframes ...`, parses generated keyframes, loads each into MuJoCo, and verifies both wheel contact points are on ground (within tolerance). This guards against floating/sunken equilibrium keyframes.
+
+## Helper Program
+
+`/Users/emmanuelcarjat/git/robot2Wheel/simulation/lqr_harness/tests/inspect_model.cpp` is a standalone inspection utility (not registered as a `ctest` test). It prints hip actuator gear/ctrlrange and hip joint ranges.
+
+## Run
+
+From repo root:
 
 ```bash
-cd /Users/emmanuelcarjat/git/robot2Wheel/simulation/lqr_harness/build
-cmake ..
-make
-cd tests
-ctest --output-on-failure
+cmake -S /Users/emmanuelcarjat/git/robot2Wheel/simulation -B /Users/emmanuelcarjat/git/robot2Wheel/simulation/build
+cmake --build /Users/emmanuelcarjat/git/robot2Wheel/simulation/build --target test_equilibrium_solver test_linearization_output test_position_actuators test_seed_invariance test_grounded_keyframes
+ctest --test-dir /Users/emmanuelcarjat/git/robot2Wheel/simulation/build/lqr_harness/tests --output-on-failure
 ```
 
-## Expected Results
+## Maintenance Rules
 
-All tests should PASS. Failures indicate:
-- **test_equilibrium_solver fails:** Gear multiplication bug reintroduced
-- **test_linearization_output fails:** Matrix structure changed (investigate if intentional)
-- **test_position_actuators fails:** Actuator definitions in robot.xml changed
-
-## Adding New Tests
-
-When modifying `linearize_hip.cpp`:
-1. Add regression test if fixing a bug
-2. Update test expectations if changing behavior intentionally
-3. Document rationale in test comments
-4. Ensure tests are deterministic (no random state)
-
-## References
-
-- MuJoCo Documentation: https://mujoco.readthedocs.io/en/stable/XMLreference.html#actuator
-- Position actuator: `actuation = gain  ⋅ (length(ctrl) - length(qpos))`
-- For `gear ≠ 0`: transmission ratio in generalized coordinates
+- If `linearize_hip` behavior changes intentionally, update the affected test expectations in the same change.
+- Keep assertions deterministic (fixed seeds, fixed tolerances, no time-dependent randomness).
+- Prefer adding regression coverage for each bug fix before changing algorithmic behavior.

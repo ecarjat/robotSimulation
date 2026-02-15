@@ -1,7 +1,7 @@
 {
   "url": "https://cad.onshape.com/documents/6e8a915e9b82730078512f3c/w/f59c9b408c08fcde5add7934/e/9ec4716578ac9422c1d6f6fc",
   "output_format": "mujoco",
-  "additional_xml": "keyframes.xml",
+  // "additional_xml": "keyframes.xml",
   "assembly_name": "RobotAssembly",
   "simplify_stls": true,
   "freejoint": false,
