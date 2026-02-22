@@ -135,6 +135,10 @@ Equilibrium columns are included when `--include-eq` is set or any `eq_hip` file
 | `--sign-gains` | `K1,K2,K3` | Gains checked by `--no-sign-flip` |
 | `--sign-eps` | `1e-9` | Near-zero threshold for sign checks |
 | `--cascaded-k0` | off | Remap K0 for cascaded architecture |
+| `--low-hip-min` | `-0.270` | Hip angle where low-hip gain shaping is full-strength |
+| `--low-hip-max` | `-0.055` | Hip angle where low-hip gain shaping tapers to 1.0 |
+| `--low-hip-k2-boost` | `1.0` | K2 multiplier at full low-hip shaping weight |
+| `--low-hip-k3-boost` | `1.0` | K3 multiplier at full low-hip shaping weight |
 | `--diag` | off | Print per-hip `rho(A)`, `||B||`, controllability rank |
 | `--out` | `lqr_sweep_results.csv` | Sweep summary CSV path |
 | `--lut-out` | `lqr_lut.csv` | Output LUT CSV path |
@@ -177,6 +181,10 @@ python3 tools/lqr_sweep.py \
   --state-dim 3 \
   --include-eq \
   --no-sign-flip \
+  --low-hip-min -0.270 \
+  --low-hip-max -0.055 \
+  --low-hip-k2-boost 2.0 \
+  --low-hip-k3-boost 1.5 \
   --lut-out lqr_lut.csv
 ```
 

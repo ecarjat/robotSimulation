@@ -60,6 +60,40 @@ def spectral_radius(A):
     return max(abs(vals))
 
 
+def clamp01(v):
+    return max(0.0, min(1.0, v))
+
+
+def apply_low_hip_gain_shape(K, hip, state_dim, low_hip_min, low_hip_max,
+                             k2_boost, k3_boost):
+    if abs(k2_boost - 1.0) < 1e-12 and abs(k3_boost - 1.0) < 1e-12:
+        return K
+
+    if state_dim == 3:
+        k2_idx = 1
+        k3_idx = 2
+    else:
+        k2_idx = 2
+        k3_idx = 3
+
+    if hip > low_hip_max:
+        return K
+
+    if low_hip_max <= low_hip_min:
+        w = 1.0
+    else:
+        w = clamp01((low_hip_max - hip) / (low_hip_max - low_hip_min))
+    if w <= 0.0:
+        return K
+
+    K_shaped = K.copy()
+    k2_scale = 1.0 + w * (k2_boost - 1.0)
+    k3_scale = 1.0 + w * (k3_boost - 1.0)
+    K_shaped[k2_idx] *= k2_scale
+    K_shaped[k3_idx] *= k3_scale
+    return K_shaped
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Sweep Q/R for LQR across hip angles and pick stable/damped candidate."
@@ -115,7 +149,26 @@ def main():
             "K0_direct to K0_cascaded = -K0_direct / K1_direct."
         ),
     )
+    ap.add_argument("--low-hip-min", type=float, default=-0.270,
+                    help="Hip angle where low-hip gain shaping is full-strength.")
+    ap.add_argument("--low-hip-max", type=float, default=-0.055,
+                    help="Hip angle where low-hip gain shaping tapers to 1.0.")
+    ap.add_argument("--low-hip-k2-boost", type=float, default=1.0,
+                    help="Multiplier for K2 at full low-hip shaping weight.")
+    ap.add_argument("--low-hip-k3-boost", type=float, default=1.0,
+                    help="Multiplier for K3 at full low-hip shaping weight.")
     args = ap.parse_args()
+
+    if args.low_hip_k2_boost <= 0.0 or args.low_hip_k3_boost <= 0.0:
+        raise SystemExit("--low-hip-k2-boost and --low-hip-k3-boost must be > 0")
+    shape_active = (abs(args.low_hip_k2_boost - 1.0) > 1e-12 or
+                    abs(args.low_hip_k3_boost - 1.0) > 1e-12)
+    if shape_active:
+        print(
+            "Info: low-hip LUT shaping enabled: "
+            f"hip in [{args.low_hip_min:.6f}, {args.low_hip_max:.6f}] "
+            f"K2x={args.low_hip_k2_boost:.6f} K3x={args.low_hip_k3_boost:.6f}"
+        )
 
     if (args.cascaded_k0
             and args.state_dim == 4
@@ -236,6 +289,11 @@ def main():
                         stable_all = False
                         break
                     K = Kp * us  # back to real input u
+                    K = apply_low_hip_gain_shape(
+                        K.flatten(), hip, args.state_dim,
+                        args.low_hip_min, args.low_hip_max,
+                        args.low_hip_k2_boost, args.low_hip_k3_boost
+                    ).reshape(K.shape)
                     k_samples.append((hip, K.flatten()))
                     Acl = A - B @ K
                     eig = np.linalg.eigvals(Acl)
@@ -355,6 +413,11 @@ def main():
             if Kp is None:
                 continue
             K = (Kp * us).flatten()
+            K = apply_low_hip_gain_shape(
+                K, hip, args.state_dim,
+                args.low_hip_min, args.low_hip_max,
+                args.low_hip_k2_boost, args.low_hip_k3_boost
+            )
             if args.cascaded_k0 and args.state_dim == 4:
                 # MotionController cascaded form uses:
                 #   v_ref_from_pos = K0 * x_err

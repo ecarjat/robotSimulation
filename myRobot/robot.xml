@@ -19,7 +19,10 @@
         <geom group="3" margin="0.002" />
       </default>
       <default class="wheel_contact">
-        <geom type="cylinder" group="3" size="0.08547 0.03" friction="1.2 0.03 0.001" condim="4" solref="0.03 2" solimp="0.90 0.95 0.001 0.5 2" priority="1" />
+        <geom type="cylinder" group="3" size="0.08547 0.03"
+              friction="1.2 0.03 0.001" condim="4"
+              solref="0.08 1.2" solimp="0.75 0.95 0.01 0.5 2"
+              margin="0.002" priority="2" />
       </default>
     </default>
   </default>

@@ -67,6 +67,7 @@ class PlatformUIAdapter {
 
   virtual bool IsMouseButtonDownEvent(int act) const = 0;
   virtual bool IsKeyDownEvent(int act) const = 0;
+  virtual bool IsKeyUpEvent(int act) const = 0;
 
   virtual int TranslateKeyCode(int key) const = 0;
   virtual mjtButton TranslateMouseButton(int button) const = 0;

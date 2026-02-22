@@ -58,8 +58,9 @@ void PlatformUIAdapter::OnKey(int key, int scancode, int act) {
   // translate API-specific key code
   int mj_key = TranslateKeyCode(key);
 
-  // release: nothing to do
-  if (!IsKeyDownEvent(act)) {
+  const bool key_down = IsKeyDownEvent(act);
+  const bool key_up = IsKeyUpEvent(act);
+  if (!key_down && !key_up) {
     return;
   }
 
@@ -68,7 +69,9 @@ void PlatformUIAdapter::OnKey(int key, int scancode, int act) {
 
   // set key info
   state_.type = mjEVENT_KEY;
-  state_.key = mj_key;
+  // Encode release as negative keycode so simulate.cc can reset press-and-hold
+  // controls (for example arrow teleop commands) on key-up.
+  state_.key = key_down ? mj_key : -mj_key;
   state_.keytime = std::chrono::duration<double>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
 
@@ -77,7 +80,7 @@ void PlatformUIAdapter::OnKey(int key, int scancode, int act) {
     event_callback_(&state_);
   }
 
-  last_key_ = mj_key;
+  last_key_ = key_down ? mj_key : 0;
 }
 
 void PlatformUIAdapter::OnMouseButton(int button, int act)  {

@@ -26,4 +26,10 @@ bool StaticModeToggle();
 // Returns true if the target changed.
 bool MotionControllerStepHipTarget(int direction);
 
+// Arrow-key teleop wrapper over MotionController::setTeleopCommands.
+// `key` expects MuJoCo arrow key constants (`mjKEY_UP/DOWN/LEFT/RIGHT`).
+// While pressed, command ramps up over time; releasing drives the corresponding axis to zero.
+// Returns true if key was handled.
+bool MotionControllerHandleArrowKey(int key, bool pressed);
+
 #endif  // MOTION_CONTROLLER_BRIDGE_H_

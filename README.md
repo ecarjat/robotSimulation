@@ -43,6 +43,10 @@ python3 tools/lqr_sweep.py \
   --state-dim 3 \
   --include-eq \
   --no-sign-flip \
+  --low-hip-min -0.270 \
+  --low-hip-max -0.055 \
+  --low-hip-k2-boost 2.0 \
+  --low-hip-k3-boost 1.5 \
   --lut-out lqr_lut.csv
 
 # Per-hip K0 sweep (run once per keyframe, or use run_lqr_pipeline.py to automate this).
@@ -336,6 +340,10 @@ Default orchestrator behavior:
   - `--state-dim 3`
   - `--include-eq`
   - `--no-sign-flip`
+  - `--low-hip-min -0.270`
+  - `--low-hip-max -0.055`
+  - `--low-hip-k2-boost 2.0`
+  - `--low-hip-k3-boost 1.5`
   - `--lut-out lqr_lut.csv`
 - runs per-hip `python3 tools/k0_sweep.py` search:
   - default seeds: `-100,-50,-1`

@@ -48,6 +48,9 @@ Useful runtime keys:
 - `m`: toggle MotionController on/off
 - `w`: toggle wheel control on/off
 - `f`: toggle static measurement mode
+- `↑` / `↓`: teleop forward/backward (press-and-hold ramps command; release returns to zero)
+- `←` / `→`: teleop turn left/right while running (press-and-hold ramps; release returns to zero)
+- `←` / `→` when paused: legacy step backward/forward
 - `i`: move hips to next LUT hip setpoint
 - `k`: move hips to previous LUT hip setpoint
 

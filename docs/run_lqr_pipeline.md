@@ -14,6 +14,11 @@ End-to-end orchestration for LUT generation and per-hip `K0` tuning.
    - `--state-dim 3`
    - `--include-eq`
    - `--no-sign-flip` (default in orchestrator)
+   - low-hip LUT shaping defaults:
+     - `--low-hip-min -0.270`
+     - `--low-hip-max -0.055`
+     - `--low-hip-k2-boost 2.0`
+     - `--low-hip-k3-boost 1.5`
 3. Per-hip `tools/k0_sweep.py` runs
 4. LUT update:
    - rewrites `K0` column in `lqr_lut.csv` using selected per-hip values
@@ -54,6 +59,8 @@ Outputs for K0 search are written under `--k0-runs-dir`, including:
 - `--k0-refine-rounds`: refinement rounds
 - `--k0-max-new-per-round`: new candidates per round
 - `--k0-sim-use-ekf`: `0`/`1` (`0` recommended for K0 identification)
+- `--low-hip-min` / `--low-hip-max`: low-hip shaping window for `K2/K3` in LUT generation
+- `--low-hip-k2-boost` / `--low-hip-k3-boost`: low-hip `K2/K3` multipliers in LUT generation
 
 ## Example
 
@@ -68,4 +75,3 @@ python3 tools/run_lqr_pipeline.py \
   --k0-max-new-per-round 4 \
   --header-out ../stm32Controller/firmware/app/control/lqr_lut_data.h
 ```
-

@@ -64,6 +64,14 @@ def parse_args() -> argparse.Namespace:
                    help="Pass --no-sign-flip to lqr_sweep (default: enabled)")
     p.add_argument("--sign-gains", default=None,
                    help="Optional --sign-gains value for lqr_sweep")
+    p.add_argument("--low-hip-min", type=float, default=-0.270,
+                   help="lqr_sweep low-hip shaping full-strength threshold")
+    p.add_argument("--low-hip-max", type=float, default=-0.055,
+                   help="lqr_sweep low-hip shaping taper-to-1.0 threshold")
+    p.add_argument("--low-hip-k2-boost", type=float, default=2.0,
+                   help="lqr_sweep low-hip K2 multiplier at full shaping weight")
+    p.add_argument("--low-hip-k3-boost", type=float, default=1.5,
+                   help="lqr_sweep low-hip K3 multiplier at full shaping weight")
     p.add_argument("--dry-run", action="store_true",
                    help="Print commands only; do not execute")
     return p.parse_args()
@@ -349,6 +357,10 @@ def main() -> int:
         "--dir", str(out_dir),
         "--state-dim", str(args.state_dim),
         "--include-eq",
+        "--low-hip-min", f"{args.low_hip_min:g}",
+        "--low-hip-max", f"{args.low_hip_max:g}",
+        "--low-hip-k2-boost", f"{args.low_hip_k2_boost:g}",
+        "--low-hip-k3-boost", f"{args.low_hip_k3_boost:g}",
         "--lut-out", str(lut),
     ]
     if args.no_sign_flip:

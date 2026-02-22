@@ -134,6 +134,7 @@ const char help_content[] =
   "Space\n"
   "+  -\n"
   "Left / Right arrow\n"
+  "Up / Down arrow\n"
   "Tab / Shift-Tab\n"
   "[  ]\n"
   "Esc\n"
@@ -157,7 +158,8 @@ const char help_content[] =
 const char help_title[] =
   "Play / Pause\n"
   "Speed Up / Down\n"
-  "Step Back / Forward\n"
+  "Step Back / Forward (paused), Turn (running)\n"
+  "Drive Back / Forward (running)\n"
   "Toggle Left / Right UI\n"
   "Cycle cameras\n"
   "Free camera\n"
@@ -1663,7 +1665,17 @@ void UiEvent(mjuiState* state) {
 
   // shortcut not handled by UI
   if (state->type==mjEVENT_KEY && state->key!=0) {
-    switch (state->key) {
+    const bool key_released = state->key < 0;
+    const int key = key_released ? -state->key : state->key;
+    const bool is_arrow_key = (key == mjKEY_UP || key == mjKEY_DOWN ||
+                               key == mjKEY_LEFT || key == mjKEY_RIGHT);
+
+    // Ignore non-arrow key release events.
+    if (key_released && !is_arrow_key) {
+      return;
+    }
+
+    switch (key) {
     case ' ':                   // Mode
       if (!sim->is_passive_ && sim->m_) {
         sim->run = 1 - sim->run;
@@ -1676,7 +1688,8 @@ void UiEvent(mjuiState* state) {
       break;
 
     case mjKEY_RIGHT:           // step forward
-      if (!sim->is_passive_ && sim->m_ && !sim->run) {
+      MotionControllerHandleArrowKey(mjKEY_RIGHT, !key_released);
+      if (!key_released && !sim->is_passive_ && sim->m_ && !sim->run) {
         ClearTimers(sim->d_);
 
         // currently in scrubber: increment scrub, load state, update slider UI
@@ -1699,7 +1712,8 @@ void UiEvent(mjuiState* state) {
       break;
 
     case mjKEY_LEFT:           // step backward
-      if (!sim->is_passive_ && sim->m_) {
+      MotionControllerHandleArrowKey(mjKEY_LEFT, !key_released);
+      if (!key_released && !sim->is_passive_ && sim->m_ && !sim->run) {
         sim->run = 0;
         ClearTimers(sim->d_);
 
@@ -1712,6 +1726,14 @@ void UiEvent(mjuiState* state) {
         UpdateProfiler(sim, sim->m_, sim->d_);
         UpdateSensor(sim, sim->m_, sim->d_);
       }
+      break;
+
+    case mjKEY_UP:
+      MotionControllerHandleArrowKey(mjKEY_UP, !key_released);
+      break;
+
+    case mjKEY_DOWN:
+      MotionControllerHandleArrowKey(mjKEY_DOWN, !key_released);
       break;
 
     case mjKEY_PAGE_UP:         // select parent body
@@ -2071,6 +2093,7 @@ void Simulate::Sync(bool state_only) {
   if (pending_.reset) {
     mj_resetData(m_, d_);
     mj_forward(m_, d_);
+    MotionControllerReset(m_, d_);
     load_error[0] = '\0';
     update_profiler = true;
     update_sensor = true;
@@ -2092,6 +2115,7 @@ void Simulate::Sync(bool state_only) {
 
   if (pending_.load_from_history) {
     LoadScrubState(this);
+    MotionControllerReset(m_, d_);
     update_profiler = true;
     update_sensor = true;
     pending_.load_from_history = false;
@@ -2100,6 +2124,7 @@ void Simulate::Sync(bool state_only) {
   if (pending_.load_key) {
     mj_resetDataKeyframe(m_, d_, this->key);
     mj_forward(m_, d_);
+    MotionControllerReset(m_, d_);
     update_profiler = true;
     update_sensor = true;
     pending_.load_key = false;

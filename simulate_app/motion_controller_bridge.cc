@@ -49,8 +49,10 @@ struct ControllerState {
   double wheel_radius = 0.08547;
   double wheel_base = 0.31;
 
-  double hip_L_target = -0.1;  // Default to keyframe value
-  double hip_R_target = -0.1;  // Default to keyframe value
+  double hip_L_target = -0.1;      // Desired target (rad)
+  double hip_R_target = -0.1;      // Desired target (rad)
+  double hip_L_target_cmd = -0.1;  // Slewed command target (rad)
+  double hip_R_target_cmd = -0.1;  // Slewed command target (rad)
 
   double last_time = -1.0;
   double last_lqr_lut_time = -1.0;
@@ -67,6 +69,7 @@ struct ControllerState {
 
   double hip_kp = 50.0;
   double hip_kd = 2.0;
+  double hip_target_slew_rad_s = 0.5;
   double wheel_torque_scale = 1.0;
   double v_enc_scale = 1.0;
   bool hold_hips = true;
@@ -84,7 +87,18 @@ struct ControllerState {
   double last_trace_time = -1.0;
   bool pitch_rate_initialized = false;
   double prev_pitch = 0.0;
+  bool teleop_has_input = false;
   float ekf_theta_r_mult = 1.0f;
+
+  bool teleop_up_pressed = false;
+  bool teleop_down_pressed = false;
+  bool teleop_left_pressed = false;
+  bool teleop_right_pressed = false;
+  float teleop_forward_cmd = 0.0f;
+  float teleop_turn_cmd = 0.0f;
+  float teleop_forward_ramp_per_s = 1.5f;
+  float teleop_turn_ramp_per_s = 2.0f;
+  bool teleop_disable_k0 = true;
 
   float accel_vib_samples[IMU_VIB_WINDOW_SAMPLES] = {};
   unsigned accel_vib_index = 0;
@@ -321,6 +335,78 @@ void update_wheel_geometry(const mjModel* m, const mjData* d) {
   }
 }
 
+float clamp_unit(float v) {
+  if (v > 1.0f) return 1.0f;
+  if (v < -1.0f) return -1.0f;
+  return v;
+}
+
+float update_teleop_axis(bool positive_pressed, bool negative_pressed, float current,
+                         float ramp_per_s, float dt_s) {
+  const int direction = (positive_pressed ? 1 : 0) - (negative_pressed ? 1 : 0);
+  if (direction == 0) {
+    return 0.0f;
+  }
+  const float step = ramp_per_s * dt_s;
+  float next = current + static_cast<float>(direction) * step;
+  // When direction flips, pass through zero first.
+  if (direction > 0 && next < 0.0f) {
+    next = 0.0f;
+  } else if (direction < 0 && next > 0.0f) {
+    next = 0.0f;
+  }
+  return clamp_unit(next);
+}
+
+double step_towards(double current, double target, double max_delta) {
+  if (max_delta <= 0.0) {
+    return target;
+  }
+  const double delta = target - current;
+  if (delta > max_delta) {
+    return current + max_delta;
+  }
+  if (delta < -max_delta) {
+    return current - max_delta;
+  }
+  return target;
+}
+
+void update_hip_slew_targets(const mjModel* m) {
+  if (!m) {
+    return;
+  }
+  if (!std::isfinite(g_state.hip_target_slew_rad_s) ||
+      g_state.hip_target_slew_rad_s <= 0.0 ||
+      !std::isfinite(m->opt.timestep) ||
+      m->opt.timestep <= 0.0) {
+    g_state.hip_L_target_cmd = g_state.hip_L_target;
+    g_state.hip_R_target_cmd = g_state.hip_R_target;
+    return;
+  }
+  const double max_delta = g_state.hip_target_slew_rad_s * m->opt.timestep;
+  g_state.hip_L_target_cmd = step_towards(g_state.hip_L_target_cmd,
+                                          g_state.hip_L_target, max_delta);
+  g_state.hip_R_target_cmd = step_towards(g_state.hip_R_target_cmd,
+                                          g_state.hip_R_target, max_delta);
+}
+
+void update_teleop_from_arrow_keys(float dt_s) {
+  if (dt_s <= 0.0f) {
+    dt_s = 0.0f;
+  }
+  // Inverted mapping: Up = backward, Down = forward.
+  g_state.teleop_forward_cmd = update_teleop_axis(
+      g_state.teleop_down_pressed, g_state.teleop_up_pressed,
+      g_state.teleop_forward_cmd, g_state.teleop_forward_ramp_per_s, dt_s);
+  // Inverted mapping: Left = right-turn command, Right = left-turn command.
+  g_state.teleop_turn_cmd = update_teleop_axis(
+      g_state.teleop_left_pressed, g_state.teleop_right_pressed,
+      g_state.teleop_turn_cmd, g_state.teleop_turn_ramp_per_s, dt_s);
+  g_state.controller.setTeleopCommands(g_state.teleop_forward_cmd,
+                                       g_state.teleop_turn_cmd);
+}
+
 void reset_ekf(const mjModel* m, const mjData* d) {
   if (!g_state.use_ekf || g_state.torso_id < 0) {
     g_state.ekf_initialized = false;
@@ -417,17 +503,18 @@ void compute_kinematics(const mjModel* m, const mjData* d,
     return;
   }
 
-  // Use proper Euler pitch angle: pitch = asin(2*(qw*qy - qz*qx))
-  // This was empirically verified to produce correct sign for balance control.
-  // Pitch rate is computed via finite difference with reset-safe history.
+  // Extract pitch directly from free-joint quaternion:
+  // theta = asin(2*(qw*qy - qz*qx)).
+  // This remains yaw-invariant for ZYX conventions and matches the sign
+  // convention used by LUT theta_eq and test_balance diagnostics.
   const mjtNum qw = d->qpos[3];
   const mjtNum qx = d->qpos[4];
   const mjtNum qy = d->qpos[5];
   const mjtNum qz = d->qpos[6];
   double pitch = std::asin(2.0 * (qw * qy - qz * qx));
-  
-  // Finite-difference pitch rate (more reliable than qvel[1]) with
-  // initialization guard to avoid spikes after reset/rewind.
+
+  // Use finite-difference pitch rate to keep ground-truth mode independent
+  // from IMU-frame conventions/noise.
   if (g_state.pitch_rate_initialized && m->opt.timestep > 0.0) {
     *theta_dot = (pitch - g_state.prev_pitch) / m->opt.timestep;
   } else {
@@ -475,10 +562,14 @@ void apply_hip_hold(const mjModel* m, mjData* d) {
     return;
   }
 
+  update_hip_slew_targets(m);
+
   if (is_servo_actuator(m, g_state.act_hip_L) &&
       is_servo_actuator(m, g_state.act_hip_R)) {
-    const double hip_L_ctrl = scaled_position_target(m, g_state.act_hip_L, g_state.hip_L_target);
-    const double hip_R_ctrl = scaled_position_target(m, g_state.act_hip_R, g_state.hip_R_target);
+    const double hip_L_ctrl =
+        scaled_position_target(m, g_state.act_hip_L, g_state.hip_L_target_cmd);
+    const double hip_R_ctrl =
+        scaled_position_target(m, g_state.act_hip_R, g_state.hip_R_target_cmd);
     d->ctrl[g_state.act_hip_L] = clamp_ctrl(m, g_state.act_hip_L, hip_L_ctrl);
     d->ctrl[g_state.act_hip_R] = clamp_ctrl(m, g_state.act_hip_R, hip_R_ctrl);
     return;
@@ -489,8 +580,8 @@ void apply_hip_hold(const mjModel* m, mjData* d) {
   const int qpos_R = m->jnt_qposadr[g_state.jnt_hip_R];
   const int qvel_R = m->jnt_dofadr[g_state.jnt_hip_R];
 
-  double err_L = g_state.hip_L_target - d->qpos[qpos_L];
-  double err_R = g_state.hip_R_target - d->qpos[qpos_R];
+  double err_L = g_state.hip_L_target_cmd - d->qpos[qpos_L];
+  double err_R = g_state.hip_R_target_cmd - d->qpos[qpos_R];
   double derr_L = -d->qvel[qvel_L];
   double derr_R = -d->qvel[qvel_R];
 
@@ -543,6 +634,9 @@ void update_lqr_from_hip(const mjModel* m, mjData* d, bool force) {
   if (g_state.k0_override_enabled) {
     K[0] = g_state.k0_override;
   }
+  if (g_state.teleop_disable_k0 && g_state.teleop_has_input) {
+    K[0] = 0.0f;
+  }
 
   if (!g_state.lqr_params_valid) {
     init_lqr_params_defaults(&g_state.lqr_params);
@@ -569,8 +663,10 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   g_state.model = m;
   g_state.model_ready = false;
   g_state.last_time = d->time;
-  g_state.use_ekf = !env_var_false("SIM_USE_EKF");
-  g_state.use_state_estimator = !env_var_false("SIM_USE_STATE_ESTIMATOR");
+  const char* sim_use_ekf = std::getenv("SIM_USE_EKF");
+  g_state.use_ekf = sim_use_ekf ? !env_var_false("SIM_USE_EKF") : false;
+  g_state.use_state_estimator =
+      g_state.use_ekf && !env_var_false("SIM_USE_STATE_ESTIMATOR");
   g_state.estimator_theta_only = env_var_true("SIM_EST_THETA_ONLY");
   g_state.estimator_xdot_gt = env_var_true("SIM_EST_XDOT_GT");
   g_state.v_enc_scale = env_var_double("SIM_VENC_SCALE", 1.0);
@@ -583,7 +679,32 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   g_state.last_trace_time = -1.0;
   g_state.pitch_rate_initialized = false;
   g_state.prev_pitch = 0.0;
+  g_state.teleop_has_input = false;
   g_state.estimator_warned_invalid = false;
+  g_state.teleop_up_pressed = false;
+  g_state.teleop_down_pressed = false;
+  g_state.teleop_left_pressed = false;
+  g_state.teleop_right_pressed = false;
+  g_state.teleop_forward_cmd = 0.0f;
+  g_state.teleop_turn_cmd = 0.0f;
+  g_state.hip_target_slew_rad_s = env_var_double("SIM_HIP_TARGET_SLEW_RAD_S", 0.5);
+  if (!std::isfinite(g_state.hip_target_slew_rad_s) ||
+      g_state.hip_target_slew_rad_s < 0.0) {
+    g_state.hip_target_slew_rad_s = 0.5;
+  }
+  g_state.teleop_forward_ramp_per_s = static_cast<float>(
+      env_var_double("SIM_TELEOP_FORWARD_RAMP", 1.5));
+  g_state.teleop_turn_ramp_per_s = static_cast<float>(
+      env_var_double("SIM_TELEOP_TURN_RAMP", 2.0));
+  g_state.teleop_disable_k0 = !env_var_false("SIM_TELEOP_DISABLE_K0");
+  if (!std::isfinite(g_state.teleop_forward_ramp_per_s) ||
+      g_state.teleop_forward_ramp_per_s < 0.0f) {
+    g_state.teleop_forward_ramp_per_s = 1.5f;
+  }
+  if (!std::isfinite(g_state.teleop_turn_ramp_per_s) ||
+      g_state.teleop_turn_ramp_per_s < 0.0f) {
+    g_state.teleop_turn_ramp_per_s = 2.0f;
+  }
   g_state.ekf_theta_r_mult = static_cast<float>(
       env_var_double("SIM_EKF_THETA_R_MULT", 1.0));
   if (!std::isfinite(g_state.ekf_theta_r_mult) || g_state.ekf_theta_r_mult <= 0.0f) {
@@ -667,6 +788,8 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
       g_state.hip_L_target = hip_L_key;
       g_state.hip_R_target = hip_R_key;
     }
+    g_state.hip_L_target_cmd = g_state.hip_L_target;
+    g_state.hip_R_target_cmd = g_state.hip_R_target;
     std::printf("MotionController: Hip targets set to L=%.4f, R=%.4f rad\n",
                 g_state.hip_L_target, g_state.hip_R_target);
   }
@@ -686,15 +809,25 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   gains.thetaKill = BALANCE_DEFAULT_THETA_KILL;
   gains.iV_max = BALANCE_DEFAULT_IV_MAX;
   g_state.controller.setBalanceGains(gains);
+  // Reset controller internals so xRef/theta trim/integrators don't leak across
+  // keyframe reloads or history scrubs.
+  g_state.controller.setRequestedMode(InnerLongMode::LQR);
+  g_state.controller.resetPidState();
   g_state.controller.setTargetVelocity(0.0f);
+  g_state.controller.setTeleopCommands(0.0f, 0.0f);
 
-  // Initialize LQR params BEFORE requesting mode change
+  // Initialize LQR params/equilibrium for the current posture.
   init_lqr_params_defaults(&g_state.lqr_params);
   g_state.lqr_params_valid = true;
   update_lqr_from_hip(m, d, true);
 
-  // Now request LQR mode (will use engage_ramp_ms=0 from params)
-  g_state.controller.setRequestedMode(InnerLongMode::LQR);
+  // Keep wheel controls zero immediately after reset/reload.
+  if (g_state.act_wheel_L >= 0) {
+    d->ctrl[g_state.act_wheel_L] = 0.0;
+  }
+  if (g_state.act_wheel_R >= 0) {
+    d->ctrl[g_state.act_wheel_R] = 0.0;
+  }
 
   if (g_state.use_state_estimator) {
     reset_state_estimator(m, d);
@@ -704,7 +837,10 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
     g_state.state_estimator_initialized = false;
   }
   if (!g_state.use_ekf) {
-    std::printf("MotionController: EKF disabled (SIM_USE_EKF=0)\n");
+    std::printf("MotionController: EKF disabled (SIM_USE_EKF=0 or unset)\n");
+    if (std::getenv("SIM_USE_STATE_ESTIMATOR")) {
+      std::printf("MotionController: ignoring SIM_USE_STATE_ESTIMATOR because EKF is disabled\n");
+    }
   }
   if (g_state.use_ekf) {
     std::printf("MotionController: estimator backend = %s\n",
@@ -716,6 +852,9 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
     }
   }
   std::printf("MotionController: encoder velocity scale = %.3f\n", g_state.v_enc_scale);
+  if (g_state.teleop_disable_k0) {
+    std::printf("MotionController: teleop K0 hold disabled after first arrow input (SIM_TELEOP_DISABLE_K0=1)\n");
+  }
   if (g_state.k0_override_enabled) {
     std::printf("MotionController: overriding LUT K0 with %.6f (SIM_K0_OVERRIDE)\n",
                 static_cast<double>(g_state.k0_override));
@@ -865,6 +1004,9 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
   double x_dot_world = 0.0;
   compute_kinematics(m, d, &theta, &theta_dot, &x, &x_dot_world);
   update_lqr_from_hip(m, d, false);
+  const float dt = static_cast<float>(m->opt.timestep);
+  update_teleop_from_arrow_keys(dt);
+  const double x_for_control = x;
 
   StateEstimate est{};
   est.gyroBias = 0.0f;
@@ -1024,8 +1166,18 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
     g_state.controller.setYawRates(gyro_yaw, yaw_rate_enc);
     est.theta = static_cast<float>(theta);
     est.thetaDot = static_cast<float>(theta_dot);
-    est.x = static_cast<float>(x);
-    est.xDot = static_cast<float>(x_dot_world);
+    est.x = static_cast<float>(x_for_control);
+    // In GT mode, use torso-forward longitudinal velocity so xDot remains
+    // consistent after large yaw rotations.
+    const mjtNum qw = d->qpos[3];
+    const mjtNum qx = d->qpos[4];
+    const mjtNum qy = d->qpos[5];
+    const mjtNum qz = d->qpos[6];
+    const double r00 = 1.0 - 2.0 * (qy * qy + qz * qz);
+    const double r10 = 2.0 * (qx * qy + qw * qz);
+    const double r20 = 2.0 * (qx * qz - qw * qy);
+    const double x_dot_long = d->qvel[0] * r00 + d->qvel[1] * r10 + d->qvel[2] * r20;
+    est.xDot = static_cast<float>(x_dot_long);
   }
 
   if ((used_state_estimator || g_state.ekf_initialized) &&
@@ -1048,7 +1200,6 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
     }
   }
 
-  const float dt = static_cast<float>(m->opt.timestep);
   MotionController::Command cmd = g_state.controller.computeControl(est, dt);
 
   if (g_state.trace_enabled &&
@@ -1134,4 +1285,38 @@ bool MotionControllerStepHipTarget(int direction) {
   std::printf("MotionController: hip target -> LUT %d/%d (%.4f rad)\n",
               next + 1, LQR_LUT_SIZE, next_target);
   return true;
+}
+
+bool MotionControllerHandleArrowKey(int key, bool pressed) {
+  if (pressed) {
+    g_state.teleop_has_input = true;
+  }
+  switch (key) {
+    case mjKEY_UP:
+      g_state.teleop_up_pressed = pressed;
+      if (!pressed && !g_state.teleop_down_pressed) {
+        g_state.teleop_forward_cmd = 0.0f;
+      }
+      return true;
+    case mjKEY_DOWN:
+      g_state.teleop_down_pressed = pressed;
+      if (!pressed && !g_state.teleop_up_pressed) {
+        g_state.teleop_forward_cmd = 0.0f;
+      }
+      return true;
+    case mjKEY_LEFT:
+      g_state.teleop_left_pressed = pressed;
+      if (!pressed && !g_state.teleop_right_pressed) {
+        g_state.teleop_turn_cmd = 0.0f;
+      }
+      return true;
+    case mjKEY_RIGHT:
+      g_state.teleop_right_pressed = pressed;
+      if (!pressed && !g_state.teleop_left_pressed) {
+        g_state.teleop_turn_cmd = 0.0f;
+      }
+      return true;
+    default:
+      return false;
+  }
 }

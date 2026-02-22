@@ -236,6 +236,7 @@ bool GlfwAdapter::IsMouseButtonDownEvent(int act) const {
 }
 
 bool GlfwAdapter::IsKeyDownEvent(int act) const { return act == GLFW_PRESS; }
+bool GlfwAdapter::IsKeyUpEvent(int act) const { return act == GLFW_RELEASE; }
 
 int GlfwAdapter::TranslateKeyCode(int key) const { return key; }
 

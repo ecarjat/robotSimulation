@@ -143,14 +143,32 @@ int NearestHipLutIndex(double hip) {
   return best;
 }
 
-void CheckHipCtrlTargets(const mjModel* m, const mjData* d, int act_hip_L, int act_hip_R,
-                         double hip_target, double tol) {
+bool HipCtrlMatches(const mjModel* m, const mjData* d, int act_hip_L, int act_hip_R,
+                    double hip_target, double tol) {
   const double gear_L = m->actuator_gear[6 * act_hip_L + 0];
   const double gear_R = m->actuator_gear[6 * act_hip_R + 0];
   const double expected_L = ClampCtrl(m, act_hip_L, hip_target * gear_L);
   const double expected_R = ClampCtrl(m, act_hip_R, hip_target * gear_R);
-  CHECK(d->ctrl[act_hip_L] == Catch::Approx(expected_L).margin(tol));
-  CHECK(d->ctrl[act_hip_R] == Catch::Approx(expected_R).margin(tol));
+  return std::fabs(d->ctrl[act_hip_L] - expected_L) <= tol &&
+         std::fabs(d->ctrl[act_hip_R] - expected_R) <= tol;
+}
+
+void CheckHipCtrlTargetsEventually(const mjModel* m, mjData* d, int act_hip_L, int act_hip_R,
+                                   double hip_target, double tol, int max_iters = 2000) {
+  for (int i = 0; i < max_iters; ++i) {
+    MotionControllerCallback(m, d);
+    if (HipCtrlMatches(m, d, act_hip_L, act_hip_R, hip_target, tol)) {
+      return;
+    }
+  }
+
+  const double gear_L = m->actuator_gear[6 * act_hip_L + 0];
+  const double gear_R = m->actuator_gear[6 * act_hip_R + 0];
+  const double expected_L = ClampCtrl(m, act_hip_L, hip_target * gear_L);
+  const double expected_R = ClampCtrl(m, act_hip_R, hip_target * gear_R);
+  INFO("Expected hip ctrl L/R: " << expected_L << " / " << expected_R);
+  INFO("Actual hip ctrl L/R: " << d->ctrl[act_hip_L] << " / " << d->ctrl[act_hip_R]);
+  FAIL_CHECK("Hip controls did not settle to requested target within max iterations");
 }
 
 CommandResult RunTestBalance(const std::vector<std::string>& args) {
@@ -188,6 +206,10 @@ void RequireSummaryPass(const CommandResult& run) {
 
 TEST_CASE("bridge hip target LUT stepping keeps gear-scaled actuator ctrl", "[simulate][bridge]")
 {
+  ScopedEnv env({
+      {"SIM_HIP_TARGET_SLEW_RAD_S", "0.5"},
+  });
+
   ModelData md = LoadModel();
   const int key_id = mj_name2id(md.m, mjOBJ_KEY, "eq_hip_m0550");
   REQUIRE(key_id >= 0);
@@ -214,26 +236,33 @@ TEST_CASE("bridge hip target LUT stepping keeps gear-scaled actuator ctrl", "[si
   MotionControllerReset(md.m, md.d);
   REQUIRE(MotionControllerIsEnabled());
 
-  MotionControllerCallback(md.m, md.d);
-  CheckHipCtrlTargets(md.m, md.d, act_hip_L, act_hip_R, hip_initial, 2e-3);
+  CheckHipCtrlTargetsEventually(md.m, md.d, act_hip_L, act_hip_R, hip_initial, 2e-3);
 
   const bool changed_up = MotionControllerStepHipTarget(+1);
   CHECK(changed_up == (idx_up != idx_initial));
+  const double ctrl_before_up_L = md.d->ctrl[act_hip_L];
+  const double ctrl_before_up_R = md.d->ctrl[act_hip_R];
   MotionControllerCallback(md.m, md.d);
-  CheckHipCtrlTargets(md.m, md.d, act_hip_L, act_hip_R, static_cast<double>(kHipLut[idx_up]),
-                      2e-3);
+  const double max_hip_delta = 0.5 * md.m->opt.timestep;
+  const double max_ctrl_delta_L =
+      std::abs(md.m->actuator_gear[6 * act_hip_L + 0]) * max_hip_delta + 1e-3;
+  const double max_ctrl_delta_R =
+      std::abs(md.m->actuator_gear[6 * act_hip_R + 0]) * max_hip_delta + 1e-3;
+  CHECK(std::abs(md.d->ctrl[act_hip_L] - ctrl_before_up_L) <= max_ctrl_delta_L);
+  CHECK(std::abs(md.d->ctrl[act_hip_R] - ctrl_before_up_R) <= max_ctrl_delta_R);
+  CheckHipCtrlTargetsEventually(md.m, md.d, act_hip_L, act_hip_R,
+                                static_cast<double>(kHipLut[idx_up]), 2e-3);
 
   const bool changed_down = MotionControllerStepHipTarget(-1);
   CHECK(changed_down == (idx_down != idx_up));
-  MotionControllerCallback(md.m, md.d);
-  CheckHipCtrlTargets(md.m, md.d, act_hip_L, act_hip_R,
-                      static_cast<double>(kHipLut[idx_down]), 2e-3);
+  CheckHipCtrlTargetsEventually(md.m, md.d, act_hip_L, act_hip_R,
+                                static_cast<double>(kHipLut[idx_down]), 2e-3);
 
   for (int i = 0; i < LQR_LUT_SIZE + 2; ++i) {
     MotionControllerStepHipTarget(-1);
-    MotionControllerCallback(md.m, md.d);
   }
-  CheckHipCtrlTargets(md.m, md.d, act_hip_L, act_hip_R, static_cast<double>(kHipLut[0]), 2e-3);
+  CheckHipCtrlTargetsEventually(md.m, md.d, act_hip_L, act_hip_R,
+                                static_cast<double>(kHipLut[0]), 2e-3);
   CHECK_FALSE(MotionControllerStepHipTarget(-1));
 }
 
@@ -279,4 +308,48 @@ TEST_CASE("test_balance accepts keyframe index", "[simulate][keyframe]")
   INFO(run.output);
   CHECK(run.code == 0);
   REQUIRE(run.output.find("Reset to keyframe 2 (eq_hip_m0550)") != std::string::npos);
+}
+
+TEST_CASE("bridge reset clears wheel command bias after teleop and keyframe reload",
+          "[simulate][bridge][reset]")
+{
+  ScopedEnv env({
+      {"SIM_TELEOP_FORWARD_RAMP", "20.0"},
+  });
+
+  ModelData md = LoadModel();
+  const int key_id = mj_name2id(md.m, mjOBJ_KEY, "eq_hip_m0550");
+  REQUIRE(key_id >= 0);
+  mj_resetDataKeyframe(md.m, md.d, key_id);
+  mj_forward(md.m, md.d);
+
+  const int act_wheel_L = mj_name2id(md.m, mjOBJ_ACTUATOR, "wheel_L");
+  const int act_wheel_R = mj_name2id(md.m, mjOBJ_ACTUATOR, "wheel_R");
+  REQUIRE(act_wheel_L >= 0);
+  REQUIRE(act_wheel_R >= 0);
+
+  mjcb_control = MotionControllerCallback;
+  MotionControllerReset(md.m, md.d);
+  REQUIRE(MotionControllerIsEnabled());
+
+  // Build up internal controller references by holding forward command.
+  REQUIRE(MotionControllerHandleArrowKey(mjKEY_UP, true));
+  for (int i = 0; i < 400; ++i) {
+    MotionControllerCallback(md.m, md.d);
+  }
+  REQUIRE(MotionControllerHandleArrowKey(mjKEY_UP, false));
+  for (int i = 0; i < 10; ++i) {
+    MotionControllerCallback(md.m, md.d);
+  }
+
+  // Reloading keyframe should clear wheel command bias immediately and on next callback.
+  mj_resetDataKeyframe(md.m, md.d, key_id);
+  mj_forward(md.m, md.d);
+  MotionControllerReset(md.m, md.d);
+  CHECK(std::fabs(md.d->ctrl[act_wheel_L]) <= 1e-9);
+  CHECK(std::fabs(md.d->ctrl[act_wheel_R]) <= 1e-9);
+
+  MotionControllerCallback(md.m, md.d);
+  CHECK(std::fabs(md.d->ctrl[act_wheel_L]) <= 0.5);
+  CHECK(std::fabs(md.d->ctrl[act_wheel_R]) <= 0.5);
 }

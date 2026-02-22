@@ -18,6 +18,15 @@ double GetPitch(const mjData* d) {
   return std::asin(2.0 * (qw * qy - qz * qx));
 }
 
+double GetYaw(const mjData* d) {
+  const double qw = d->qpos[3];
+  const double qx = d->qpos[4];
+  const double qy = d->qpos[5];
+  const double qz = d->qpos[6];
+  return std::atan2(2.0 * (qw * qz + qx * qy),
+                    1.0 - 2.0 * (qy * qy + qz * qz));
+}
+
 struct BalanceStats {
   double theta_ref = 0.0;
   double max_theta = 0.0;
@@ -404,6 +413,7 @@ void PrintState(double t, const mjModel* m, const mjData* d) {
   double xdot = d->qvel[0];
   double ydot = d->qvel[1];
   double theta = GetPitch(d);
+  double yaw = GetYaw(d);
   double theta_dot = d->qvel[4];
   
   // Get wheel velocities
@@ -425,9 +435,10 @@ void PrintState(double t, const mjModel* m, const mjData* d) {
     }
   }
   
-  std::printf("t=%.3f  x=% 7.4f  y=% 7.4f  vx=% 7.4f  vy=% 7.4f  θ=% 7.4f°  θ̇=% 7.4f  "
+  std::printf("t=%.3f  x=% 7.4f  y=% 7.4f  vx=% 7.4f  vy=% 7.4f  ψ=% 7.2f°  θ=% 7.4f°  θ̇=% 7.4f  "
               "wL=% 7.3f  wR=% 7.3f\n",
-              t, x, y, xdot, ydot, theta * 57.3, theta_dot, wheel_L_vel, wheel_R_vel);
+              t, x, y, xdot, ydot, yaw * 57.3, theta * 57.3, theta_dot,
+              wheel_L_vel, wheel_R_vel);
 }
 
 void PrintAvailableKeyframes(const mjModel* m) {
@@ -465,7 +476,7 @@ bool ResolveKeyframe(const mjModel* m, const char* key_spec, int* key_idx_out) {
 }
 
 int RunBalanceTest(const char* model_path, double duration, double print_dt, bool diag_enabled,
-                   const char* key_spec) {
+                   const char* key_spec, int turn_key, double turn_for_s) {
   char error[1024] = "";
   mjModel* m = mj_loadXML(model_path, nullptr, error, sizeof(error));
   
@@ -520,7 +531,7 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
   std::printf("Timestep: %.4f seconds\n", m->opt.timestep);
   std::printf("Controller enabled: %s\n\n", MotionControllerIsEnabled() ? "YES" : "NO");
   
-  std::printf("Legend: x/y=position(m)  vx/vy=velocity(m/s)  θ=pitch(deg)  θ̇=angular_vel(rad/s)  "
+  std::printf("Legend: x/y=position(m)  vx/vy=velocity(m/s)  ψ=yaw(deg)  θ=pitch(deg)  θ̇=angular_vel(rad/s)  "
               "wL/wR=wheel_vel(rad/s)\n\n");
   
   DiagContext diag_ctx;
@@ -534,8 +545,17 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
                 diag_ctx.wheel_radius, diag_ctx.venc_scale);
   }
   double next_print = 0.0;
+  bool turn_pressed = false;
+  if (turn_key != 0) {
+    MotionControllerHandleArrowKey(turn_key, true);
+    turn_pressed = true;
+  }
   
   while (d->time < duration) {
+    if (turn_pressed && turn_for_s > 0.0 && d->time >= turn_for_s) {
+      MotionControllerHandleArrowKey(turn_key, false);
+      turn_pressed = false;
+    }
     mj_step(m, d);
     
     UpdateStats(d, stats);
@@ -600,6 +620,10 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
               stats.final_x, stats.final_y, stats.final_xdot, stats.final_ydot,
               stats.final_theta_err * 57.3,
               stats.diverged ? 1 : 0, passed ? 1 : 0);
+
+  if (turn_pressed) {
+    MotionControllerHandleArrowKey(turn_key, false);
+  }
   
   mj_deleteData(d);
   mj_deleteModel(m);
@@ -615,6 +639,8 @@ int main(int argc, char** argv) {
   double print_dt = 0.2;   // Print every 0.2 seconds
   bool diag_enabled = false;
   const char* key_spec = nullptr;
+  int turn_key = 0;
+  double turn_for_s = 0.0;
 
   int positional = 0;
   for (int i = 1; i < argc; ++i) {
@@ -634,9 +660,26 @@ int main(int argc, char** argv) {
       key_spec = argv[++i];
       continue;
     }
+    if (!std::strcmp(argv[i], "--turn") && i + 1 < argc) {
+      const char* dir = argv[++i];
+      if (!std::strcmp(dir, "left")) {
+        turn_key = mjKEY_LEFT;
+      } else if (!std::strcmp(dir, "right")) {
+        turn_key = mjKEY_RIGHT;
+      } else {
+        std::printf("Unknown --turn value: %s (expected left|right)\n", dir);
+        return 1;
+      }
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--turn-for") && i + 1 < argc) {
+      turn_for_s = std::atof(argv[++i]);
+      continue;
+    }
     if (!std::strcmp(argv[i], "--help")) {
       std::printf("Usage: test_balance [model_path] [duration_s] [--diag] "
-                  "[--duration seconds] [--print-dt seconds] [--key name_or_index]\n");
+                  "[--duration seconds] [--print-dt seconds] [--key name_or_index] "
+                  "[--turn left|right] [--turn-for seconds]\n");
       return 0;
     }
     if (positional == 0) {
@@ -657,5 +700,10 @@ int main(int argc, char** argv) {
   // Set control callback
   mjcb_control = MotionControllerCallback;
   
-  return RunBalanceTest(model_path, duration, print_dt, diag_enabled, key_spec);
+  if (turn_key != 0 && turn_for_s <= 0.0) {
+    turn_for_s = duration;
+  }
+
+  return RunBalanceTest(model_path, duration, print_dt, diag_enabled, key_spec,
+                        turn_key, turn_for_s);
 }

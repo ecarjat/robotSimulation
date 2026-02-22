@@ -55,6 +55,7 @@ class GlfwAdapter : public PlatformUIAdapter {
 
   bool IsMouseButtonDownEvent(int act) const override;
   bool IsKeyDownEvent(int act) const override;
+  bool IsKeyUpEvent(int act) const override;
 
   int TranslateKeyCode(int key) const override;
   mjtButton TranslateMouseButton(int button) const override;
