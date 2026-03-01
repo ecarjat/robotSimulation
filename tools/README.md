@@ -9,6 +9,8 @@ Supported pipeline tools:
 - `run_lqr_pipeline.py`: end-to-end orchestrator (`linearize_hip` -> `lqr_sweep` -> per-hip `k0_sweep` -> LUT header generation)
 - `lqr_sweep.py`: selects `K1/K2/K3` (and `K0` mapping mode) from reduced models
 - `k0_sweep.py`: per-hip `K0` sweep against `test_balance`
+- `torque_sweep.py`: sweeps disturbance-recovery torque across hip keyframes (`eq_hip_*`)
+- `speed_pose_sweep.py`: sweeps hip keyframes and speed targets to find the pose with highest stabilized speed
 - `lqr_lut_to_header.py`: converts `lqr_lut.csv` to firmware header
 
 Additional analysis tool:
@@ -257,4 +259,109 @@ python3 tools/k0_sweep.py \
   --keys eq_hip_p0525 \
   --run-csv linearize_out/k0_sweeps/k0_sweep_runs_eq_hip_p0525.csv \
   --agg-csv linearize_out/k0_sweeps/k0_sweep_agg_eq_hip_p0525.csv
+```
+
+## torque_sweep.py
+
+This tool runs disturbance recovery tests across hip keyframes and reports max wheel torque.
+
+### Purpose
+
+`torque_sweep.py` automates:
+
+1. selecting keyframes (`--keys` or derive from `lqr_lut.csv`)
+2. running `test_balance` with disturbance options
+3. parsing `RECOVERY_SUMMARY`
+4. reporting global maximum torque across swept hip poses
+
+### Inputs
+
+- `--test-balance`: path to `test_balance`
+- `--model`: model path (typically `myRobot/scene.xml`)
+- `--keys`: optional comma-separated keyframes
+- `--lut`: derive keyframes from LUT `hip` column when `--keys` is omitted
+- disturbance/recovery settings:
+  - `--theta-disturb-deg`
+  - `--disturb-time`
+  - `--wheel-limit-nm`
+  - `--settle-theta-err-deg`
+  - `--settle-theta-dot`
+  - `--settle-hold`
+
+### Outputs
+
+- Per-key CSV (`--csv-out`, default `torque_sweep_results.csv`)
+- Console lines:
+  - `MAX_TAU key=... hip=... max_tau=...`
+  - `MAX_TAU_TO_SETTLE key=... hip=... max_tau_to_settle=...`
+  - `SWEEP_SUMMARY ...`
+
+### Example
+
+Sweep all hip keyframes from LUT with a 5° disturbance and high wheel limit:
+
+```bash
+python3 tools/torque_sweep.py \
+  --duration 8 \
+  --theta-disturb-deg 5 \
+  --disturb-time 0.5 \
+  --wheel-limit-nm 35 \
+  --csv-out linearize_out/torque_sweep_results.csv
+```
+
+## speed_pose_sweep.py
+
+This tool sweeps speed targets across hip keyframes and reports which pose stabilizes at the highest speed.
+
+### Purpose
+
+`speed_pose_sweep.py` automates:
+
+1. selecting keyframes (`--keys` or derive from `lqr_lut.csv`)
+2. running `test_balance` in speed mode for each `(keyframe, speed target)`
+3. parsing `SPEED_SUMMARY` and `SUMMARY`
+4. reporting:
+   - best sustained stable speed per keyframe
+   - global best pose (`BEST_POSE`)
+
+### Inputs
+
+- `--keys`: optional comma-separated keyframes
+- `--lut`: derive keyframes from LUT `hip` column when `--keys` is omitted
+- `--speed-values`: explicit speed targets list (comma-separated), or:
+  - `--speed-min`, `--speed-max`, `--speed-step`
+- speed-mode flags passed through to `test_balance`:
+  - `--speed-start-time`
+  - `--speed-ramp-mps2`
+  - `--speed-settle-err-mps`
+  - `--speed-settle-hold`
+  - `--post-settle-hold` (additional no-divergence hold after settle; default `2.0 s`)
+  - `--wheel-limit-nm`
+  - `--lqr-v-ref-limit` (if omitted, auto-set to `max(|speed|)+0.25`)
+
+### Outputs
+
+- Per-run CSV (`--run-csv`, default `speed_pose_sweep_runs.csv`)
+- Per-key summary CSV (`--key-csv`, default `speed_pose_sweep_key_summary.csv`)
+- Console line:
+  - `BEST_POSE key=... max_stable_target_speed_mps=...`
+
+### Example
+
+Sweep one pose from `0.5` to `3.0 m/s`:
+
+```bash
+python3 tools/speed_pose_sweep.py \
+  --keys eq_hip_p0525 \
+  --speed-min 0.5 \
+  --speed-max 3.0 \
+  --speed-step 0.25 \
+  --duration 10 \
+  --speed-ramp-mps2 0.8 \
+  --post-settle-hold 2.0 \
+  --wheel-limit-nm 35 \
+  --lqr-v-ref-limit 3.2 \
+  --break-on-first-unstable \
+  --run-csv linearize_out/speed_pose_sweep_runs.csv \
+  --key-csv linearize_out/speed_pose_sweep_key_summary.csv
 ```

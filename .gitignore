@@ -6,3 +6,4 @@ linearize_out/
 __pycache__/
 *.csv
 MUJOCO_LOG.TXT
+old/*

@@ -94,7 +94,10 @@ target_include_directories(simulate_mc PRIVATE
   ${FIRMWARE_DIR}/libs/TinyEKF
 )
 
-target_compile_definitions(simulate_mc PRIVATE APP_CONFIG_HOST)
+target_compile_definitions(simulate_mc PRIVATE
+  APP_CONFIG_HOST
+  APP_CONFIG_SIM_FAST
+)
 
 target_link_libraries(simulate_mc PRIVATE ${MUJOCO_LIB} PkgConfig::GLFW)
 
@@ -130,7 +133,10 @@ target_include_directories(test_balance PRIVATE
   ${FIRMWARE_DIR}/libs/TinyEKF
 )
 
-target_compile_definitions(test_balance PRIVATE APP_CONFIG_HOST)
+target_compile_definitions(test_balance PRIVATE
+  APP_CONFIG_HOST
+  APP_CONFIG_SIM_FAST
+)
 
 target_link_libraries(test_balance PRIVATE ${MUJOCO_LIB})
 

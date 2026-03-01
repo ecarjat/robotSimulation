@@ -43,6 +43,7 @@ target_include_directories(test_motion_controller_bridge PRIVATE
 
 target_compile_definitions(test_motion_controller_bridge PRIVATE
   APP_CONFIG_HOST
+  APP_CONFIG_SIM_FAST
   SIM_TEST_MODEL_PATH="${SIM_TEST_MODEL_PATH}"
   TEST_BALANCE_BIN="$<TARGET_FILE:test_balance>"
 )

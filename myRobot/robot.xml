@@ -172,9 +172,9 @@
   </asset>
   <actuator>
     <position class="hip_position" name="hip_L" joint="hip_L" />
-    <motor class="myRobot" name="wheel_L" joint="wheel_L" gear="1" ctrllimited="true" ctrlrange="-34.67 34.67" />
+    <motor class="myRobot" name="wheel_L" joint="wheel_L" gear="1" ctrllimited="true" ctrlrange="-35 35" />
     <position class="hip_position" name="hip_R" joint="hip_R" />
-    <motor class="myRobot" name="wheel_R" joint="wheel_R" gear="1" ctrllimited="true" ctrlrange="-34.67 34.67" />
+    <motor class="myRobot" name="wheel_R" joint="wheel_R" gear="1" ctrllimited="true" ctrlrange="-35 35" />
   </actuator>
   <sensor>
     <gyro name="gyro" site="imu" />

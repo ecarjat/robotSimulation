@@ -96,6 +96,7 @@ inline void Copy(T& dst, const T& src) {
 //------------------------------------------- global -----------------------------------------------
 
 const double zoom_increment = 0.02;  // ratio of one click-wheel zoom increment to vertical extent
+bool show_mc_hud = true;
 
 // section ids
 enum {
@@ -153,7 +154,8 @@ const char help_content[] =
   "F4\n"
   "F5\n"
   "UI right-button hold\n"
-  "UI title double-click";
+  "UI title double-click\n"
+  "V";
 
 const char help_title[] =
   "Play / Pause\n"
@@ -178,7 +180,8 @@ const char help_title[] =
   "Sensors\n"
   "Full screen\n"
   "Show UI shortcuts\n"
-  "Expand/collapse all";
+  "Expand/collapse all\n"
+  "Toggle MC HUD";
 
 
 //-------------------------------- profiler, sensor, info, watch -----------------------------------
@@ -1840,6 +1843,11 @@ void UiEvent(mjuiState* state) {
       MotionControllerStepHipTarget(-1);
       break;
 
+    case 'v':                   // toggle MotionController HUD
+    case 'V':
+      show_mc_hud = !show_mc_hud;
+      break;
+
     case mjKEY_TAB:             // toggle left/right UI
       if (!state->shift) {
         // toggle left UI
@@ -2697,6 +2705,40 @@ void Simulate::Render() {
   if (rtlabel[0]) {
     mjr_overlay(mjFONT_BIG, mjGRID_TOPLEFT, smallrect, rtlabel, nullptr,
                 &this->platform_ui->mjr_context());
+  }
+
+  if (show_mc_hud) {
+    MotionControllerHudTelemetry hud{};
+    if (MotionControllerGetHudTelemetry(&hud)) {
+      char hud_title[256] = "MC HUD\nstate\nmode\nv_ref (m/s)\nvx (m/s)\ntau L/R (Nm)\nmax|tau| (Nm)\ntime (s)";
+      char hud_values[256];
+      const char* ctrl_state = hud.controller_enabled ? "ON" : "OFF";
+      const char* wheel_state = hud.wheel_control_enabled ? "" : " [wheel off]";
+      const char* static_state = hud.static_mode ? " [static]" : "";
+      const char* data_state = hud.valid ? "" : " [no data]";
+      const char* requested_mode = (hud.requested_mode == 1) ? "LQR" : "PID";
+      const char* active_mode = (hud.active_mode == 1) ? "LQR" : "PID";
+      char mode_state[48];
+      if (hud.stop_mode_active) {
+        std::snprintf(mode_state, sizeof(mode_state), "%s/%s [STOP]",
+                      active_mode, requested_mode);
+      } else {
+        std::snprintf(mode_state, sizeof(mode_state), "%s/%s",
+                      active_mode, requested_mode);
+      }
+      std::snprintf(hud_values, sizeof(hud_values),
+                    "\n%s%s%s%s\n%s\n%+.3f\n%+.3f\n%+.2f / %+.2f\n%.2f\n%.2f",
+                    ctrl_state, wheel_state, static_state, data_state,
+                    mode_state,
+                    static_cast<double>(hud.v_ref_mps),
+                    static_cast<double>(hud.vx_mps),
+                    static_cast<double>(hud.tau_l_nm),
+                    static_cast<double>(hud.tau_r_nm),
+                    static_cast<double>(hud.tau_abs_peak_nm),
+                    hud.sim_time_s);
+      mjr_overlay(mjFONT_NORMAL, mjGRID_TOPRIGHT, smallrect, hud_title, hud_values,
+                  &this->platform_ui->mjr_context());
+    }
   }
 
   // show ui 0

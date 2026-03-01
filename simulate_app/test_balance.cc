@@ -9,6 +9,7 @@
 namespace {
 
 constexpr double kBridgeDefaultWheelRadius = 0.08547;
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 
 double GetPitch(const mjData* d) {
   const double qw = d->qpos[3];
@@ -102,6 +103,67 @@ struct DiagStats {
   double theta_prev = 0.0;
 };
 
+struct DisturbanceOptions {
+  double theta_disturb_deg = 0.0;
+  double disturb_time = 0.5;
+  double wheel_limit_nm = 0.0;
+  double settle_theta_err_deg = 1.0;
+  double settle_theta_dot = 0.5;
+  double settle_hold_s = 0.5;
+};
+
+struct RecoveryStats {
+  int act_wheel_L = -1;
+  int act_wheel_R = -1;
+  bool enabled = false;
+  bool disturbance_applied = false;
+  bool stabilized = false;
+  double theta_ref = 0.0;
+  double disturb_time = 0.0;
+  double disturb_deg = 0.0;
+  double settle_theta_err_rad = 0.0;
+  double settle_theta_dot = 0.0;
+  double settle_hold_s = 0.0;
+  double settle_candidate_start = -1.0;
+  double settle_time = -1.0;
+  double max_abs_torque_l = 0.0;
+  double max_abs_torque_r = 0.0;
+  double max_abs_torque = 0.0;
+  double max_abs_torque_to_settle = 0.0;
+};
+
+struct SpeedOptions {
+  double target_speed_mps = 0.0;
+  double speed_start_time = 0.5;
+  double speed_ramp_mps2 = 1.0;
+  double speed_settle_err_mps = 0.05;
+  double speed_settle_hold_s = 0.5;
+  double lqr_v_ref_limit_mps = -1.0;  // <0 means use controller default
+};
+
+struct SpeedStats {
+  int act_wheel_L = -1;
+  int act_wheel_R = -1;
+  bool enabled = false;
+  bool command_applied = false;
+  bool stabilized = false;
+  double target_speed_mps = 0.0;
+  double speed_ramp_mps2 = 0.0;
+  double commanded_speed_mps = 0.0;
+  double initial_speed_mps = 0.0;
+  double command_time = 0.0;
+  double settle_err_mps = 0.0;
+  double settle_hold_s = 0.0;
+  double settle_candidate_start = -1.0;
+  double settle_time = -1.0;
+  double max_speed_mps = 0.0;
+  double final_speed_mps = 0.0;
+  double max_abs_torque_l = 0.0;
+  double max_abs_torque_r = 0.0;
+  double max_abs_torque = 0.0;
+  double max_abs_torque_to_settle = 0.0;
+};
+
 bool ReadSensorVec3(const mjModel* m, const mjData* d, int sensor_id, mjtNum out[3]) {
   if (sensor_id < 0) {
     return false;
@@ -128,6 +190,226 @@ double EnvVarDouble(const char* name, double fallback) {
     return fallback;
   }
   return parsed;
+}
+
+void SetPitchInQpos(mjData* d, double theta) {
+  d->qpos[3] = std::cos(0.5 * theta);  // qw
+  d->qpos[4] = 0.0;                    // qx
+  d->qpos[5] = std::sin(0.5 * theta);  // qy
+  d->qpos[6] = 0.0;                    // qz
+}
+
+void ApplyWheelCtrlLimit(mjModel* m, double wheel_limit_nm) {
+  if (!m || wheel_limit_nm <= 0.0) {
+    return;
+  }
+  const int act_wheel_l = mj_name2id(m, mjOBJ_ACTUATOR, "wheel_L");
+  const int act_wheel_r = mj_name2id(m, mjOBJ_ACTUATOR, "wheel_R");
+  auto set_limit = [&](int act_id) {
+    if (act_id < 0 || act_id >= m->nu) {
+      return;
+    }
+    m->actuator_ctrllimited[act_id] = 1;
+    m->actuator_ctrlrange[2 * act_id + 0] = -wheel_limit_nm;
+    m->actuator_ctrlrange[2 * act_id + 1] = wheel_limit_nm;
+  };
+  set_limit(act_wheel_l);
+  set_limit(act_wheel_r);
+}
+
+void ConfigureSimLimits(mjModel* m, double wheel_limit_nm, double lqr_v_ref_limit_mps) {
+  if (m && wheel_limit_nm > 0.0) {
+    ApplyWheelCtrlLimit(m, wheel_limit_nm);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.6f", wheel_limit_nm);
+    setenv("SIM_LQR_U_LIMIT", buf, 1);
+  }
+  if (lqr_v_ref_limit_mps >= 0.0) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.6f", lqr_v_ref_limit_mps);
+    setenv("SIM_LQR_V_REF_LIMIT", buf, 1);
+  }
+}
+
+bool MaybeApplyThetaDisturbance(const mjModel* m,
+                                mjData* d,
+                                const DisturbanceOptions& opts,
+                                RecoveryStats& recovery) {
+  if (!recovery.enabled || recovery.disturbance_applied) {
+    return false;
+  }
+  if (d->time + 1e-9 < opts.disturb_time) {
+    return false;
+  }
+
+  const double theta_before = GetPitch(d);
+  const double theta_after = theta_before + opts.theta_disturb_deg * kDegToRad;
+  recovery.theta_ref = theta_before;
+  SetPitchInQpos(d, theta_after);
+
+  // Keep this as angle disturbance, not a velocity impulse.
+  if (m->nv > 4) {
+    d->qvel[4] = 0.0;
+  }
+  mj_forward(m, d);
+
+  recovery.disturbance_applied = true;
+  recovery.disturb_time = d->time;
+  recovery.settle_candidate_start = -1.0;
+  recovery.settle_time = -1.0;
+  recovery.max_abs_torque_l = 0.0;
+  recovery.max_abs_torque_r = 0.0;
+  recovery.max_abs_torque = 0.0;
+  recovery.max_abs_torque_to_settle = 0.0;
+
+  std::printf("Applied disturbance at t=%.3f s: Δtheta=%+.3f° (theta %.3f° -> %.3f°)\n",
+              d->time, opts.theta_disturb_deg, theta_before * 57.3, theta_after * 57.3);
+  return true;
+}
+
+void UpdateRecoveryStats(const mjData* d, RecoveryStats& recovery) {
+  if (!recovery.enabled || !recovery.disturbance_applied) {
+    return;
+  }
+
+  const double tau_l =
+      (recovery.act_wheel_L >= 0) ? static_cast<double>(d->ctrl[recovery.act_wheel_L]) : 0.0;
+  const double tau_r =
+      (recovery.act_wheel_R >= 0) ? static_cast<double>(d->ctrl[recovery.act_wheel_R]) : 0.0;
+  const double abs_l = std::abs(tau_l);
+  const double abs_r = std::abs(tau_r);
+  const double abs_max = (abs_l > abs_r) ? abs_l : abs_r;
+
+  recovery.max_abs_torque_l = std::max(recovery.max_abs_torque_l, abs_l);
+  recovery.max_abs_torque_r = std::max(recovery.max_abs_torque_r, abs_r);
+  recovery.max_abs_torque = std::max(recovery.max_abs_torque, abs_max);
+  if (!recovery.stabilized) {
+    recovery.max_abs_torque_to_settle =
+        std::max(recovery.max_abs_torque_to_settle, abs_max);
+  }
+
+  if (recovery.stabilized) {
+    return;
+  }
+
+  const double theta_err = GetPitch(d) - recovery.theta_ref;
+  const double theta_dot = d->qvel[4];
+  const bool stable_now = (std::abs(theta_err) <= recovery.settle_theta_err_rad) &&
+                          (std::abs(theta_dot) <= recovery.settle_theta_dot);
+
+  if (!stable_now) {
+    recovery.settle_candidate_start = -1.0;
+    return;
+  }
+  if (recovery.settle_candidate_start < 0.0) {
+    recovery.settle_candidate_start = d->time;
+    return;
+  }
+  if ((d->time - recovery.settle_candidate_start) >= recovery.settle_hold_s) {
+    recovery.stabilized = true;
+    recovery.settle_time = d->time;
+  }
+}
+
+void MaybeApplySpeedCommand(const SpeedOptions& opts, const mjData* d, SpeedStats& speed) {
+  if (!speed.enabled || speed.command_applied) {
+    return;
+  }
+  if (d->time + 1e-9 < opts.speed_start_time) {
+    return;
+  }
+
+  speed.initial_speed_mps = d->qvel[0];
+  speed.commanded_speed_mps = speed.initial_speed_mps;
+  if (opts.speed_ramp_mps2 <= 0.0) {
+    speed.commanded_speed_mps = opts.target_speed_mps;
+  }
+  MotionControllerSetTargetVelocityMps(speed.commanded_speed_mps);
+  speed.command_applied = true;
+  speed.command_time = d->time;
+  speed.settle_candidate_start = -1.0;
+  speed.settle_time = -1.0;
+  speed.max_speed_mps = 0.0;
+  speed.max_abs_torque_l = 0.0;
+  speed.max_abs_torque_r = 0.0;
+  speed.max_abs_torque = 0.0;
+  speed.max_abs_torque_to_settle = 0.0;
+
+  if (opts.speed_ramp_mps2 > 0.0) {
+    std::printf("Applied speed command at t=%.3f s: v_ref=%+.3f m/s (ramp %.3f m/s² from %.3f m/s)\n",
+                d->time, opts.target_speed_mps, opts.speed_ramp_mps2, speed.initial_speed_mps);
+  } else {
+    std::printf("Applied speed command at t=%.3f s: v_ref=%+.3f m/s\n",
+                d->time, opts.target_speed_mps);
+  }
+}
+
+void UpdateSpeedCommand(const mjModel* m, const SpeedOptions& opts, SpeedStats& speed) {
+  if (!m || !speed.enabled || !speed.command_applied) {
+    return;
+  }
+  if (opts.speed_ramp_mps2 <= 0.0) {
+    return;
+  }
+  const double dt = m->opt.timestep;
+  if (!(dt > 0.0)) {
+    return;
+  }
+  const double delta = opts.target_speed_mps - speed.commanded_speed_mps;
+  if (std::abs(delta) < 1e-9) {
+    return;
+  }
+  const double max_step = opts.speed_ramp_mps2 * dt;
+  if (std::abs(delta) <= max_step) {
+    speed.commanded_speed_mps = opts.target_speed_mps;
+  } else {
+    speed.commanded_speed_mps += (delta > 0.0 ? max_step : -max_step);
+  }
+  MotionControllerSetTargetVelocityMps(speed.commanded_speed_mps);
+}
+
+void UpdateSpeedStats(const mjData* d, SpeedStats& speed) {
+  if (!speed.enabled || !speed.command_applied) {
+    return;
+  }
+
+  const double vx = d->qvel[0];
+  speed.final_speed_mps = vx;
+  speed.max_speed_mps = std::max(speed.max_speed_mps, std::abs(vx));
+
+  const double tau_l =
+      (speed.act_wheel_L >= 0) ? static_cast<double>(d->ctrl[speed.act_wheel_L]) : 0.0;
+  const double tau_r =
+      (speed.act_wheel_R >= 0) ? static_cast<double>(d->ctrl[speed.act_wheel_R]) : 0.0;
+  const double abs_l = std::abs(tau_l);
+  const double abs_r = std::abs(tau_r);
+  const double abs_max = (abs_l > abs_r) ? abs_l : abs_r;
+
+  speed.max_abs_torque_l = std::max(speed.max_abs_torque_l, abs_l);
+  speed.max_abs_torque_r = std::max(speed.max_abs_torque_r, abs_r);
+  speed.max_abs_torque = std::max(speed.max_abs_torque, abs_max);
+  if (!speed.stabilized) {
+    speed.max_abs_torque_to_settle = std::max(speed.max_abs_torque_to_settle, abs_max);
+  }
+
+  if (speed.stabilized) {
+    return;
+  }
+
+  const double speed_err = vx - speed.target_speed_mps;
+  const bool stable_now = std::abs(speed_err) <= speed.settle_err_mps;
+  if (!stable_now) {
+    speed.settle_candidate_start = -1.0;
+    return;
+  }
+  if (speed.settle_candidate_start < 0.0) {
+    speed.settle_candidate_start = d->time;
+    return;
+  }
+  if ((d->time - speed.settle_candidate_start) >= speed.settle_hold_s) {
+    speed.stabilized = true;
+    speed.settle_time = d->time;
+  }
 }
 
 void InitDiagContext(const mjModel* m, DiagContext& ctx) {
@@ -476,7 +758,9 @@ bool ResolveKeyframe(const mjModel* m, const char* key_spec, int* key_idx_out) {
 }
 
 int RunBalanceTest(const char* model_path, double duration, double print_dt, bool diag_enabled,
-                   const char* key_spec, int turn_key, double turn_for_s) {
+                   const char* key_spec, int turn_key, double turn_for_s,
+                   const DisturbanceOptions& disturb_opts,
+                   const SpeedOptions& speed_opts) {
   char error[1024] = "";
   mjModel* m = mj_loadXML(model_path, nullptr, error, sizeof(error));
   
@@ -491,6 +775,8 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
     mj_deleteModel(m);
     return 1;
   }
+
+  ConfigureSimLimits(m, disturb_opts.wheel_limit_nm, speed_opts.lqr_v_ref_limit_mps);
   
   // Reset to requested keyframe (or keyframe 0 by default) if available.
   if (m->nkey > 0) {
@@ -519,6 +805,32 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
   BalanceStats stats;
   stats.theta_ref = GetPitch(d);
   MotionControllerReset(m, d);
+
+  RecoveryStats recovery;
+  recovery.enabled = std::abs(disturb_opts.theta_disturb_deg) > 1e-9;
+  recovery.disturb_deg = disturb_opts.theta_disturb_deg;
+  recovery.disturb_time = disturb_opts.disturb_time;
+  recovery.settle_theta_err_rad = disturb_opts.settle_theta_err_deg * kDegToRad;
+  recovery.settle_theta_dot = disturb_opts.settle_theta_dot;
+  recovery.settle_hold_s = disturb_opts.settle_hold_s;
+  recovery.act_wheel_L = mj_name2id(m, mjOBJ_ACTUATOR, "wheel_L");
+  recovery.act_wheel_R = mj_name2id(m, mjOBJ_ACTUATOR, "wheel_R");
+
+  if (recovery.enabled && disturb_opts.disturb_time <= 0.0) {
+    MaybeApplyThetaDisturbance(m, d, disturb_opts, recovery);
+  }
+
+  SpeedStats speed;
+  speed.enabled = std::abs(speed_opts.target_speed_mps) > 1e-9;
+  speed.target_speed_mps = speed_opts.target_speed_mps;
+  speed.speed_ramp_mps2 = speed_opts.speed_ramp_mps2;
+  speed.settle_err_mps = speed_opts.speed_settle_err_mps;
+  speed.settle_hold_s = speed_opts.speed_settle_hold_s;
+  speed.act_wheel_L = mj_name2id(m, mjOBJ_ACTUATOR, "wheel_L");
+  speed.act_wheel_R = mj_name2id(m, mjOBJ_ACTUATOR, "wheel_R");
+  if (speed.enabled && speed_opts.speed_start_time <= 0.0) {
+    MaybeApplySpeedCommand(speed_opts, d, speed);
+  }
   
   // Enable controller if not already enabled
   if (!MotionControllerIsEnabled()) {
@@ -530,6 +842,30 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
   std::printf("Duration: %.1f seconds\n", duration);
   std::printf("Timestep: %.4f seconds\n", m->opt.timestep);
   std::printf("Controller enabled: %s\n\n", MotionControllerIsEnabled() ? "YES" : "NO");
+  if (disturb_opts.wheel_limit_nm > 0.0) {
+    std::printf("Wheel/LQR torque limit override: %.2f Nm\n", disturb_opts.wheel_limit_nm);
+  }
+  if (speed_opts.lqr_v_ref_limit_mps >= 0.0) {
+    std::printf("LQR v_ref limit override: %.3f m/s\n", speed_opts.lqr_v_ref_limit_mps);
+  }
+  if (recovery.enabled) {
+    std::printf("Disturbance: Δtheta=%+.3f° at t=%.3f s\n",
+                disturb_opts.theta_disturb_deg, disturb_opts.disturb_time);
+    std::printf("Settle criteria: |theta_err| <= %.3f° and |theta_dot| <= %.3f rad/s for %.3f s\n\n",
+                disturb_opts.settle_theta_err_deg, disturb_opts.settle_theta_dot,
+                disturb_opts.settle_hold_s);
+  }
+  if (speed.enabled) {
+    std::printf("Speed target: v_ref=%+.3f m/s at t=%.3f s\n",
+                speed_opts.target_speed_mps, speed_opts.speed_start_time);
+    if (speed_opts.speed_ramp_mps2 > 0.0) {
+      std::printf("Speed command ramp: %.3f m/s²\n", speed_opts.speed_ramp_mps2);
+    } else {
+      std::printf("Speed command ramp: disabled (step command)\n");
+    }
+    std::printf("Speed settle criteria: |vx-v_ref| <= %.3f m/s for %.3f s\n\n",
+                speed_opts.speed_settle_err_mps, speed_opts.speed_settle_hold_s);
+  }
   
   std::printf("Legend: x/y=position(m)  vx/vy=velocity(m/s)  ψ=yaw(deg)  θ=pitch(deg)  θ̇=angular_vel(rad/s)  "
               "wL/wR=wheel_vel(rad/s)\n\n");
@@ -552,6 +888,13 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
   }
   
   while (d->time < duration) {
+    if (recovery.enabled) {
+      MaybeApplyThetaDisturbance(m, d, disturb_opts, recovery);
+    }
+    if (speed.enabled) {
+      MaybeApplySpeedCommand(speed_opts, d, speed);
+      UpdateSpeedCommand(m, speed_opts, speed);
+    }
     if (turn_pressed && turn_for_s > 0.0 && d->time >= turn_for_s) {
       MotionControllerHandleArrowKey(turn_key, false);
       turn_pressed = false;
@@ -559,6 +902,8 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
     mj_step(m, d);
     
     UpdateStats(d, stats);
+    UpdateRecoveryStats(d, recovery);
+    UpdateSpeedStats(d, speed);
     bool print_now = d->time >= next_print;
     if (diag_enabled) {
       UpdateDiag(m, d, diag_ctx, diag_stats, print_now);
@@ -600,8 +945,47 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
   std::printf("Final state:   x=% .4f  y=% .4f  vx=% .4f  vy=% .4f  θ=% .4f°  θ_err=% .4f°  θ̇=% .4f\n",
               stats.final_x, stats.final_y, stats.final_xdot, stats.final_ydot,
               stats.final_theta * 57.3, stats.final_theta_err * 57.3, stats.final_theta_dot);
+  if (recovery.enabled) {
+    std::printf("Recovery torque peak |tau|: L=%.4f Nm  R=%.4f Nm  max=%.4f Nm\n",
+                recovery.max_abs_torque_l, recovery.max_abs_torque_r, recovery.max_abs_torque);
+    if (recovery.stabilized) {
+      std::printf("Stabilized at t=%.3f s (%.3f s after disturbance), "
+                  "max |tau| until stabilize=%.4f Nm\n",
+                  recovery.settle_time, recovery.settle_time - recovery.disturb_time,
+                  recovery.max_abs_torque_to_settle);
+    } else {
+      std::printf("Did not satisfy settle criteria by end of run; "
+                  "max |tau| during recovery=%.4f Nm\n",
+                  recovery.max_abs_torque_to_settle);
+    }
+  }
+  if (speed.enabled) {
+    std::printf("Speed-mode torque peak |tau|: L=%.4f Nm  R=%.4f Nm  max=%.4f Nm\n",
+                speed.max_abs_torque_l, speed.max_abs_torque_r, speed.max_abs_torque);
+    std::printf("Speed-mode max |vx|: %.4f m/s  final vx: %.4f m/s\n",
+                speed.max_speed_mps, speed.final_speed_mps);
+    std::printf("Speed command: start %.4f m/s -> target %.4f m/s (final cmd %.4f m/s)\n",
+                speed.initial_speed_mps, speed.target_speed_mps, speed.commanded_speed_mps);
+    if (speed.stabilized) {
+      std::printf("Speed stabilized at t=%.3f s (%.3f s after command), "
+                  "max |tau| until stabilize=%.4f Nm\n",
+                  speed.settle_time, speed.settle_time - speed.command_time,
+                  speed.max_abs_torque_to_settle);
+    } else {
+      std::printf("Speed did not satisfy settle criteria by end of run; "
+                  "max |tau| during acceleration=%.4f Nm\n",
+                  speed.max_abs_torque_to_settle);
+    }
+  }
   
-  bool passed = !stats.diverged && stats.max_theta_err < 0.17; // < ~10 degrees from keyframe ref
+  bool passed = false;
+  if (speed.enabled) {
+    // In speed-target mode, intentional motion/lean shifts make theta_err-based
+    // balance pass criteria invalid; use stabilization success instead.
+    passed = !stats.diverged && speed.command_applied && speed.stabilized;
+  } else {
+    passed = !stats.diverged && stats.max_theta_err < 0.17;  // < ~10 degrees from keyframe ref
+  }
   if (diag_enabled) {
     PrintDiagSummary(diag_stats);
   }
@@ -620,10 +1004,37 @@ int RunBalanceTest(const char* model_path, double duration, double print_dt, boo
               stats.final_x, stats.final_y, stats.final_xdot, stats.final_ydot,
               stats.final_theta_err * 57.3,
               stats.diverged ? 1 : 0, passed ? 1 : 0);
+  if (recovery.enabled) {
+    std::printf("RECOVERY_SUMMARY disturb_deg=%.6f disturb_time=%.6f "
+                "stabilized=%d settle_time=%.6f settle_delay=%.6f "
+                "max_tau_l=%.6f max_tau_r=%.6f max_tau=%.6f max_tau_to_settle=%.6f\n",
+                recovery.disturb_deg, recovery.disturb_time, recovery.stabilized ? 1 : 0,
+                recovery.settle_time,
+                (recovery.stabilized ? (recovery.settle_time - recovery.disturb_time) : -1.0),
+                recovery.max_abs_torque_l, recovery.max_abs_torque_r,
+                recovery.max_abs_torque, recovery.max_abs_torque_to_settle);
+  }
+  if (speed.enabled) {
+    std::printf("SPEED_SUMMARY target_speed_mps=%.6f command_time=%.6f "
+                "stabilized=%d settle_time=%.6f settle_delay=%.6f "
+                "max_speed_mps=%.6f final_speed_mps=%.6f "
+                "speed_ramp_mps2=%.6f commanded_speed_mps=%.6f "
+                "lqr_v_ref_limit_mps=%.6f "
+                "max_tau_l=%.6f max_tau_r=%.6f max_tau=%.6f max_tau_to_settle=%.6f\n",
+                speed.target_speed_mps, speed.command_time, speed.stabilized ? 1 : 0,
+                speed.settle_time,
+                (speed.stabilized ? (speed.settle_time - speed.command_time) : -1.0),
+                speed.max_speed_mps, speed.final_speed_mps,
+                speed.speed_ramp_mps2, speed.commanded_speed_mps,
+                speed_opts.lqr_v_ref_limit_mps,
+                speed.max_abs_torque_l, speed.max_abs_torque_r,
+                speed.max_abs_torque, speed.max_abs_torque_to_settle);
+  }
 
   if (turn_pressed) {
     MotionControllerHandleArrowKey(turn_key, false);
   }
+  MotionControllerClearTargetVelocityOverride();
   
   mj_deleteData(d);
   mj_deleteModel(m);
@@ -641,6 +1052,8 @@ int main(int argc, char** argv) {
   const char* key_spec = nullptr;
   int turn_key = 0;
   double turn_for_s = 0.0;
+  DisturbanceOptions disturb_opts;
+  SpeedOptions speed_opts;
 
   int positional = 0;
   for (int i = 1; i < argc; ++i) {
@@ -679,8 +1092,61 @@ int main(int argc, char** argv) {
     if (!std::strcmp(argv[i], "--help")) {
       std::printf("Usage: test_balance [model_path] [duration_s] [--diag] "
                   "[--duration seconds] [--print-dt seconds] [--key name_or_index] "
-                  "[--turn left|right] [--turn-for seconds]\n");
+                  "[--turn left|right] [--turn-for seconds] "
+                  "[--theta-disturb-deg deg] [--disturb-time s] [--wheel-limit-nm nm] "
+                  "[--settle-theta-err-deg deg] [--settle-theta-dot rad_s] [--settle-hold s] "
+                  "[--target-speed-mps mps] [--speed-start-time s] "
+                  "[--speed-ramp-mps2 mps2] [--lqr-v-ref-limit mps] "
+                  "[--speed-settle-err-mps mps] [--speed-settle-hold s]\n");
       return 0;
+    }
+    if (!std::strcmp(argv[i], "--theta-disturb-deg") && i + 1 < argc) {
+      disturb_opts.theta_disturb_deg = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--disturb-time") && i + 1 < argc) {
+      disturb_opts.disturb_time = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--wheel-limit-nm") && i + 1 < argc) {
+      disturb_opts.wheel_limit_nm = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--settle-theta-err-deg") && i + 1 < argc) {
+      disturb_opts.settle_theta_err_deg = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--settle-theta-dot") && i + 1 < argc) {
+      disturb_opts.settle_theta_dot = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--settle-hold") && i + 1 < argc) {
+      disturb_opts.settle_hold_s = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--target-speed-mps") && i + 1 < argc) {
+      speed_opts.target_speed_mps = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--speed-start-time") && i + 1 < argc) {
+      speed_opts.speed_start_time = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--speed-ramp-mps2") && i + 1 < argc) {
+      speed_opts.speed_ramp_mps2 = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--lqr-v-ref-limit") && i + 1 < argc) {
+      speed_opts.lqr_v_ref_limit_mps = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--speed-settle-err-mps") && i + 1 < argc) {
+      speed_opts.speed_settle_err_mps = std::atof(argv[++i]);
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--speed-settle-hold") && i + 1 < argc) {
+      speed_opts.speed_settle_hold_s = std::atof(argv[++i]);
+      continue;
     }
     if (positional == 0) {
       model_path = argv[i];
@@ -703,7 +1169,44 @@ int main(int argc, char** argv) {
   if (turn_key != 0 && turn_for_s <= 0.0) {
     turn_for_s = duration;
   }
+  if (disturb_opts.settle_theta_err_deg <= 0.0) {
+    std::printf("Invalid --settle-theta-err-deg (must be > 0)\n");
+    return 1;
+  }
+  if (disturb_opts.settle_theta_dot <= 0.0) {
+    std::printf("Invalid --settle-theta-dot (must be > 0)\n");
+    return 1;
+  }
+  if (disturb_opts.settle_hold_s <= 0.0) {
+    std::printf("Invalid --settle-hold (must be > 0)\n");
+    return 1;
+  }
+  if (disturb_opts.wheel_limit_nm < 0.0) {
+    std::printf("Invalid --wheel-limit-nm (must be >= 0)\n");
+    return 1;
+  }
+  if (speed_opts.speed_settle_err_mps <= 0.0) {
+    std::printf("Invalid --speed-settle-err-mps (must be > 0)\n");
+    return 1;
+  }
+  if (speed_opts.speed_settle_hold_s <= 0.0) {
+    std::printf("Invalid --speed-settle-hold (must be > 0)\n");
+    return 1;
+  }
+  if (speed_opts.speed_ramp_mps2 < 0.0) {
+    std::printf("Invalid --speed-ramp-mps2 (must be >= 0; 0 = step)\n");
+    return 1;
+  }
+  if (speed_opts.lqr_v_ref_limit_mps < 0.0 && speed_opts.lqr_v_ref_limit_mps != -1.0) {
+    std::printf("Invalid --lqr-v-ref-limit (must be >= 0)\n");
+    return 1;
+  }
+  if (std::abs(speed_opts.target_speed_mps) > 1e-9 &&
+      std::abs(disturb_opts.theta_disturb_deg) > 1e-9) {
+    std::printf("Choose either disturbance mode or speed-target mode (not both in one run)\n");
+    return 1;
+  }
 
   return RunBalanceTest(model_path, duration, print_dt, diag_enabled, key_spec,
-                        turn_key, turn_for_s);
+                        turn_key, turn_for_s, disturb_opts, speed_opts);
 }

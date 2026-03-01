@@ -87,7 +87,6 @@ struct ControllerState {
   double last_trace_time = -1.0;
   bool pitch_rate_initialized = false;
   double prev_pitch = 0.0;
-  bool teleop_has_input = false;
   float ekf_theta_r_mult = 1.0f;
 
   bool teleop_up_pressed = false;
@@ -98,7 +97,21 @@ struct ControllerState {
   float teleop_turn_cmd = 0.0f;
   float teleop_forward_ramp_per_s = 1.5f;
   float teleop_turn_ramp_per_s = 2.0f;
-  bool teleop_disable_k0 = true;
+  float teleop_turn_release_ramp_per_s = 0.6f;
+  bool target_velocity_override = false;
+  double target_velocity_mps = 0.0;
+  double longitudinal_odom_x = 0.0;
+  bool longitudinal_odom_initialized = false;
+  std::atomic<bool> hud_valid{false};
+  std::atomic<double> hud_sim_time_s{0.0};
+  std::atomic<float> hud_v_ref_mps{0.0f};
+  std::atomic<float> hud_vx_mps{0.0f};
+  std::atomic<float> hud_tau_l_nm{0.0f};
+  std::atomic<float> hud_tau_r_nm{0.0f};
+  std::atomic<float> hud_tau_abs_peak_nm{0.0f};
+  std::atomic<int> hud_requested_mode{0};
+  std::atomic<int> hud_active_mode{0};
+  std::atomic<bool> hud_stop_mode_active{false};
 
   float accel_vib_samples[IMU_VIB_WINDOW_SAMPLES] = {};
   unsigned accel_vib_index = 0;
@@ -119,6 +132,49 @@ struct ControllerState {
 };
 
 ControllerState g_state;
+
+void reset_hud_telemetry() {
+  g_state.hud_valid.store(false, std::memory_order_relaxed);
+  g_state.hud_sim_time_s.store(0.0, std::memory_order_relaxed);
+  g_state.hud_v_ref_mps.store(0.0f, std::memory_order_relaxed);
+  g_state.hud_vx_mps.store(0.0f, std::memory_order_relaxed);
+  g_state.hud_tau_l_nm.store(0.0f, std::memory_order_relaxed);
+  g_state.hud_tau_r_nm.store(0.0f, std::memory_order_relaxed);
+  g_state.hud_tau_abs_peak_nm.store(0.0f, std::memory_order_relaxed);
+  g_state.hud_requested_mode.store(0, std::memory_order_relaxed);
+  g_state.hud_active_mode.store(0, std::memory_order_relaxed);
+  g_state.hud_stop_mode_active.store(false, std::memory_order_relaxed);
+}
+
+void update_hud_telemetry(const mjData* d,
+                          float v_ref_mps,
+                          float vx_mps,
+                          float tau_l_nm,
+                          float tau_r_nm,
+                          int requested_mode,
+                          int active_mode,
+                          bool stop_mode_active) {
+  if (!d) {
+    return;
+  }
+  g_state.hud_sim_time_s.store(static_cast<double>(d->time), std::memory_order_relaxed);
+  g_state.hud_v_ref_mps.store(v_ref_mps, std::memory_order_relaxed);
+  g_state.hud_vx_mps.store(vx_mps, std::memory_order_relaxed);
+  g_state.hud_tau_l_nm.store(tau_l_nm, std::memory_order_relaxed);
+  g_state.hud_tau_r_nm.store(tau_r_nm, std::memory_order_relaxed);
+  g_state.hud_requested_mode.store(requested_mode, std::memory_order_relaxed);
+  g_state.hud_active_mode.store(active_mode, std::memory_order_relaxed);
+  g_state.hud_stop_mode_active.store(stop_mode_active, std::memory_order_relaxed);
+
+  const float abs_l = fabsf(tau_l_nm);
+  const float abs_r = fabsf(tau_r_nm);
+  const float abs_max = (abs_l > abs_r) ? abs_l : abs_r;
+  const float prev_peak = g_state.hud_tau_abs_peak_nm.load(std::memory_order_relaxed);
+  if (abs_max > prev_peak) {
+    g_state.hud_tau_abs_peak_nm.store(abs_max, std::memory_order_relaxed);
+  }
+  g_state.hud_valid.store(true, std::memory_order_relaxed);
+}
 
 int find_id(const mjModel* m, int type, const char* name) {
   return mj_name2id(m, type, name);
@@ -342,12 +398,21 @@ float clamp_unit(float v) {
 }
 
 float update_teleop_axis(bool positive_pressed, bool negative_pressed, float current,
-                         float ramp_per_s, float dt_s) {
+                         float ramp_per_s, float release_ramp_per_s, float dt_s) {
   const int direction = (positive_pressed ? 1 : 0) - (negative_pressed ? 1 : 0);
+  const float step = ramp_per_s * dt_s;
   if (direction == 0) {
+    // No key pressed: slew command back to zero instead of snapping, which
+    // avoids abrupt yaw/velocity discontinuities on key release.
+    const float release_step = release_ramp_per_s * dt_s;
+    if (current > 0.0f) {
+      return (release_step > 0.0f) ? std::max(0.0f, current - release_step) : current;
+    }
+    if (current < 0.0f) {
+      return (release_step > 0.0f) ? std::min(0.0f, current + release_step) : current;
+    }
     return 0.0f;
   }
-  const float step = ramp_per_s * dt_s;
   float next = current + static_cast<float>(direction) * step;
   // When direction flips, pass through zero first.
   if (direction > 0 && next < 0.0f) {
@@ -398,13 +463,29 @@ void update_teleop_from_arrow_keys(float dt_s) {
   // Inverted mapping: Up = backward, Down = forward.
   g_state.teleop_forward_cmd = update_teleop_axis(
       g_state.teleop_down_pressed, g_state.teleop_up_pressed,
-      g_state.teleop_forward_cmd, g_state.teleop_forward_ramp_per_s, dt_s);
+      g_state.teleop_forward_cmd, g_state.teleop_forward_ramp_per_s,
+      g_state.teleop_forward_ramp_per_s, dt_s);
   // Inverted mapping: Left = right-turn command, Right = left-turn command.
   g_state.teleop_turn_cmd = update_teleop_axis(
       g_state.teleop_left_pressed, g_state.teleop_right_pressed,
-      g_state.teleop_turn_cmd, g_state.teleop_turn_ramp_per_s, dt_s);
+      g_state.teleop_turn_cmd, g_state.teleop_turn_ramp_per_s,
+      g_state.teleop_turn_release_ramp_per_s, dt_s);
   g_state.controller.setTeleopCommands(g_state.teleop_forward_cmd,
                                        g_state.teleop_turn_cmd);
+  if (g_state.target_velocity_override) {
+    g_state.controller.setTargetVelocity(
+        static_cast<float>(g_state.target_velocity_mps));
+  }
+}
+
+float current_target_velocity_mps() {
+  if (g_state.target_velocity_override) {
+    return static_cast<float>(g_state.target_velocity_mps);
+  }
+  float target = PARAM_MAX_FORWARD_VEL * g_state.teleop_forward_cmd;
+  if (target > PARAM_MAX_FORWARD_VEL) target = PARAM_MAX_FORWARD_VEL;
+  if (target < -PARAM_MAX_FORWARD_VEL) target = -PARAM_MAX_FORWARD_VEL;
+  return target;
 }
 
 void reset_ekf(const mjModel* m, const mjData* d) {
@@ -596,14 +677,22 @@ void init_lqr_params_defaults(lqr_params_t* out) {
   if (!out) {
     return;
   }
+  double lqr_u_limit = env_var_double("SIM_LQR_U_LIMIT", LQR_U_LIMIT);
+  if (!std::isfinite(lqr_u_limit) || lqr_u_limit <= 0.0) {
+    lqr_u_limit = LQR_U_LIMIT;
+  }
+  double lqr_v_ref_limit = env_var_double("SIM_LQR_V_REF_LIMIT", LQR_V_REF_LIMIT);
+  if (!std::isfinite(lqr_v_ref_limit) || lqr_v_ref_limit < 0.0) {
+    lqr_v_ref_limit = LQR_V_REF_LIMIT;
+  }
   out->K[0] = LQR_K0_X;
   out->K[1] = LQR_K1_V;
   out->K[2] = LQR_K2_THETA;
   out->K[3] = LQR_K3_THETADOT;
-  out->u_limit = LQR_U_LIMIT;
+  out->u_limit = static_cast<float>(lqr_u_limit);
   out->du_limit = 0.0f;  // Disable rate limiting in simulation
   out->theta_ref_limit = 0.20f;  // 0.20 rad ≈ 11.5° — allow full theta_eq range from LUT
-  out->v_ref_limit = LQR_V_REF_LIMIT;
+  out->v_ref_limit = static_cast<float>(lqr_v_ref_limit);
   out->engage_ramp_ms = 0;   // Skip PID→LQR ramp in simulation
   out->disengage_ramp_ms = 0;
   out->default_mode = 1;     // Start directly in LQR mode
@@ -633,9 +722,6 @@ void update_lqr_from_hip(const mjModel* m, mjData* d, bool force) {
 
   if (g_state.k0_override_enabled) {
     K[0] = g_state.k0_override;
-  }
-  if (g_state.teleop_disable_k0 && g_state.teleop_has_input) {
-    K[0] = 0.0f;
   }
 
   if (!g_state.lqr_params_valid) {
@@ -679,7 +765,6 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   g_state.last_trace_time = -1.0;
   g_state.pitch_rate_initialized = false;
   g_state.prev_pitch = 0.0;
-  g_state.teleop_has_input = false;
   g_state.estimator_warned_invalid = false;
   g_state.teleop_up_pressed = false;
   g_state.teleop_down_pressed = false;
@@ -687,6 +772,11 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   g_state.teleop_right_pressed = false;
   g_state.teleop_forward_cmd = 0.0f;
   g_state.teleop_turn_cmd = 0.0f;
+  g_state.target_velocity_override = false;
+  g_state.target_velocity_mps = 0.0;
+  g_state.longitudinal_odom_x = 0.0;
+  g_state.longitudinal_odom_initialized = false;
+  reset_hud_telemetry();
   g_state.hip_target_slew_rad_s = env_var_double("SIM_HIP_TARGET_SLEW_RAD_S", 0.5);
   if (!std::isfinite(g_state.hip_target_slew_rad_s) ||
       g_state.hip_target_slew_rad_s < 0.0) {
@@ -696,7 +786,8 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
       env_var_double("SIM_TELEOP_FORWARD_RAMP", 1.5));
   g_state.teleop_turn_ramp_per_s = static_cast<float>(
       env_var_double("SIM_TELEOP_TURN_RAMP", 2.0));
-  g_state.teleop_disable_k0 = !env_var_false("SIM_TELEOP_DISABLE_K0");
+  g_state.teleop_turn_release_ramp_per_s = static_cast<float>(
+      env_var_double("SIM_TELEOP_TURN_RELEASE_RAMP", 0.6));
   if (!std::isfinite(g_state.teleop_forward_ramp_per_s) ||
       g_state.teleop_forward_ramp_per_s < 0.0f) {
     g_state.teleop_forward_ramp_per_s = 1.5f;
@@ -704,6 +795,10 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   if (!std::isfinite(g_state.teleop_turn_ramp_per_s) ||
       g_state.teleop_turn_ramp_per_s < 0.0f) {
     g_state.teleop_turn_ramp_per_s = 2.0f;
+  }
+  if (!std::isfinite(g_state.teleop_turn_release_ramp_per_s) ||
+      g_state.teleop_turn_release_ramp_per_s < 0.0f) {
+    g_state.teleop_turn_release_ramp_per_s = 0.6f;
   }
   g_state.ekf_theta_r_mult = static_cast<float>(
       env_var_double("SIM_EKF_THETA_R_MULT", 1.0));
@@ -809,6 +904,36 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
   gains.thetaKill = BALANCE_DEFAULT_THETA_KILL;
   gains.iV_max = BALANCE_DEFAULT_IV_MAX;
   g_state.controller.setBalanceGains(gains);
+
+  LqrSpeedSchedule speed_schedule = g_state.controller.getLqrSpeedSchedule();
+  {
+    const char* raw_enabled = std::getenv("SIM_LQR_SPEED_SCHED_ENABLE");
+    if (raw_enabled && *raw_enabled) {
+      speed_schedule.enabled = !env_var_false("SIM_LQR_SPEED_SCHED_ENABLE");
+    }
+    auto maybe_set_float = [&](const char* name, float* out) {
+      if (!out) {
+        return;
+      }
+      double parsed = 0.0;
+      if (env_var_parse_double(name, &parsed)) {
+        *out = static_cast<float>(parsed);
+      }
+    };
+    maybe_set_float("SIM_LQR_CRUISE_ENTER_CMD_MPS", &speed_schedule.cruise_enter_cmd_mps);
+    maybe_set_float("SIM_LQR_CRUISE_EXIT_CMD_MPS", &speed_schedule.cruise_exit_cmd_mps);
+    maybe_set_float("SIM_LQR_CRUISE_ENTER_MEAS_MPS", &speed_schedule.cruise_enter_meas_mps);
+    maybe_set_float("SIM_LQR_CRUISE_EXIT_MEAS_MPS", &speed_schedule.cruise_exit_meas_mps);
+    maybe_set_float("SIM_LQR_CRUISE_BLEND_TAU_S", &speed_schedule.cruise_blend_tau_s);
+    maybe_set_float("SIM_LQR_VREF_MARGIN_MPS", &speed_schedule.v_ref_margin_mps);
+    maybe_set_float("SIM_LQR_THETA_LIMIT_REST_CAP_RAD",
+                    &speed_schedule.theta_ref_limit_rest_cap_rad);
+    maybe_set_float("SIM_LQR_THETA_LIMIT_CRUISE_CAP_RAD",
+                    &speed_schedule.theta_ref_limit_cruise_cap_rad);
+    maybe_set_float("SIM_LQR_YAW_DAMP_CRUISE_MULT", &speed_schedule.yaw_damp_cruise_mult);
+  }
+  g_state.controller.setLqrSpeedSchedule(speed_schedule);
+
   // Reset controller internals so xRef/theta trim/integrators don't leak across
   // keyframe reloads or history scrubs.
   g_state.controller.setRequestedMode(InnerLongMode::LQR);
@@ -852,13 +977,18 @@ void MotionControllerReset(const mjModel* m, mjData* d) {
     }
   }
   std::printf("MotionController: encoder velocity scale = %.3f\n", g_state.v_enc_scale);
-  if (g_state.teleop_disable_k0) {
-    std::printf("MotionController: teleop K0 hold disabled after first arrow input (SIM_TELEOP_DISABLE_K0=1)\n");
-  }
   if (g_state.k0_override_enabled) {
     std::printf("MotionController: overriding LUT K0 with %.6f (SIM_K0_OVERRIDE)\n",
                 static_cast<double>(g_state.k0_override));
   }
+  std::printf("MotionController: speed scheduler = %s (cmd enter/exit=%.3f/%.3f m/s, "
+              "meas enter/exit=%.3f/%.3f m/s, tau=%.3f s)\n",
+              speed_schedule.enabled ? "enabled" : "disabled",
+              static_cast<double>(speed_schedule.cruise_enter_cmd_mps),
+              static_cast<double>(speed_schedule.cruise_exit_cmd_mps),
+              static_cast<double>(speed_schedule.cruise_enter_meas_mps),
+              static_cast<double>(speed_schedule.cruise_exit_meas_mps),
+              static_cast<double>(speed_schedule.cruise_blend_tau_s));
   if (g_state.use_ekf && !g_state.use_state_estimator) {
     std::printf("MotionController: EKF accel grace = %d steps (%.1f ms)\n",
                 g_state.accel_grace_steps_cfg,
@@ -995,6 +1125,10 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
 
     // Hip control is still active, so user can move sliders
     apply_hip_hold(m, d);
+    const int requested_mode = static_cast<int>(g_state.controller.getRequestedMode());
+    const int active_mode = static_cast<int>(g_state.controller.getActiveMode());
+    update_hud_telemetry(d, current_target_velocity_mps(), 0.0f, 0.0f, 0.0f,
+                         requested_mode, active_mode, false);
     return;  // Skip normal control logic
   }
 
@@ -1006,7 +1140,6 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
   update_lqr_from_hip(m, d, false);
   const float dt = static_cast<float>(m->opt.timestep);
   update_teleop_from_arrow_keys(dt);
-  const double x_for_control = x;
 
   StateEstimate est{};
   est.gyroBias = 0.0f;
@@ -1166,7 +1299,6 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
     g_state.controller.setYawRates(gyro_yaw, yaw_rate_enc);
     est.theta = static_cast<float>(theta);
     est.thetaDot = static_cast<float>(theta_dot);
-    est.x = static_cast<float>(x_for_control);
     // In GT mode, use torso-forward longitudinal velocity so xDot remains
     // consistent after large yaw rotations.
     const mjtNum qw = d->qpos[3];
@@ -1177,6 +1309,13 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
     const double r10 = 2.0 * (qx * qy + qw * qz);
     const double r20 = 2.0 * (qx * qz - qw * qy);
     const double x_dot_long = d->qvel[0] * r00 + d->qvel[1] * r10 + d->qvel[2] * r20;
+    if (!g_state.longitudinal_odom_initialized) {
+      g_state.longitudinal_odom_initialized = true;
+      g_state.longitudinal_odom_x = 0.0;
+    } else if (dt > 0.0f) {
+      g_state.longitudinal_odom_x += x_dot_long * static_cast<double>(dt);
+    }
+    est.x = static_cast<float>(g_state.longitudinal_odom_x);
     est.xDot = static_cast<float>(x_dot_long);
   }
 
@@ -1230,12 +1369,36 @@ void MotionControllerCallback(const mjModel* m, mjData* d) {
 
   apply_wheel_control(m, d, cmd);
   apply_hip_hold(m, d);
+
+  float tau_l_nm = cmd.torque.torqueLeftNm;
+  float tau_r_nm = cmd.torque.torqueRightNm;
+  if (g_state.act_wheel_L >= 0 && g_state.act_wheel_L < m->nu) {
+    tau_l_nm = static_cast<float>(d->ctrl[g_state.act_wheel_L]);
+  }
+  if (g_state.act_wheel_R >= 0 && g_state.act_wheel_R < m->nu) {
+    tau_r_nm = static_cast<float>(d->ctrl[g_state.act_wheel_R]);
+  }
+  int requested_mode = static_cast<int>(g_state.controller.getRequestedMode());
+  int active_mode = static_cast<int>(g_state.controller.getActiveMode());
+  bool stop_mode_active = false;
+  InnerCtrlDiag diag{};
+  if (g_state.controller.getInnerCtrlDiag(diag)) {
+    requested_mode = static_cast<int>(diag.requested_mode);
+    active_mode = static_cast<int>(diag.active_mode);
+    stop_mode_active = diag.stop_mode_active;
+  }
+  update_hud_telemetry(d, current_target_velocity_mps(),
+                       static_cast<float>(x_dot_world), tau_l_nm, tau_r_nm,
+                       requested_mode, active_mode, stop_mode_active);
 }
 
 bool MotionControllerToggle() {
   const bool new_state = !g_state.enabled.load();
   g_state.enabled.store(new_state);
   g_state.user_override.store(true);
+  if (new_state) {
+    g_state.hud_tau_abs_peak_nm.store(0.0f, std::memory_order_relaxed);
+  }
   std::printf("MotionController: %s\n", new_state ? "enabled" : "disabled");
   return new_state;
 }
@@ -1288,35 +1451,60 @@ bool MotionControllerStepHipTarget(int direction) {
 }
 
 bool MotionControllerHandleArrowKey(int key, bool pressed) {
-  if (pressed) {
-    g_state.teleop_has_input = true;
-  }
   switch (key) {
     case mjKEY_UP:
       g_state.teleop_up_pressed = pressed;
       if (!pressed && !g_state.teleop_down_pressed) {
+        // Keep forward release immediate so stop-mode can engage quickly.
         g_state.teleop_forward_cmd = 0.0f;
       }
       return true;
     case mjKEY_DOWN:
       g_state.teleop_down_pressed = pressed;
       if (!pressed && !g_state.teleop_up_pressed) {
+        // Keep forward release immediate so stop-mode can engage quickly.
         g_state.teleop_forward_cmd = 0.0f;
       }
       return true;
     case mjKEY_LEFT:
       g_state.teleop_left_pressed = pressed;
-      if (!pressed && !g_state.teleop_right_pressed) {
-        g_state.teleop_turn_cmd = 0.0f;
-      }
       return true;
     case mjKEY_RIGHT:
       g_state.teleop_right_pressed = pressed;
-      if (!pressed && !g_state.teleop_left_pressed) {
-        g_state.teleop_turn_cmd = 0.0f;
-      }
       return true;
     default:
       return false;
   }
+}
+
+void MotionControllerSetTargetVelocityMps(double velocity_mps) {
+  if (!std::isfinite(velocity_mps)) {
+    return;
+  }
+  g_state.target_velocity_override = true;
+  g_state.target_velocity_mps = velocity_mps;
+}
+
+void MotionControllerClearTargetVelocityOverride() {
+  g_state.target_velocity_override = false;
+}
+
+bool MotionControllerGetHudTelemetry(MotionControllerHudTelemetry* out) {
+  if (!out) {
+    return false;
+  }
+  out->valid = g_state.hud_valid.load(std::memory_order_relaxed);
+  out->controller_enabled = g_state.enabled.load(std::memory_order_relaxed);
+  out->wheel_control_enabled = g_state.wheel_control_enabled.load(std::memory_order_relaxed);
+  out->static_mode = g_state.static_mode.load(std::memory_order_relaxed);
+  out->sim_time_s = g_state.hud_sim_time_s.load(std::memory_order_relaxed);
+  out->v_ref_mps = g_state.hud_v_ref_mps.load(std::memory_order_relaxed);
+  out->vx_mps = g_state.hud_vx_mps.load(std::memory_order_relaxed);
+  out->tau_l_nm = g_state.hud_tau_l_nm.load(std::memory_order_relaxed);
+  out->tau_r_nm = g_state.hud_tau_r_nm.load(std::memory_order_relaxed);
+  out->tau_abs_peak_nm = g_state.hud_tau_abs_peak_nm.load(std::memory_order_relaxed);
+  out->requested_mode = g_state.hud_requested_mode.load(std::memory_order_relaxed);
+  out->active_mode = g_state.hud_active_mode.load(std::memory_order_relaxed);
+  out->stop_mode_active = g_state.hud_stop_mode_active.load(std::memory_order_relaxed);
+  return true;
 }

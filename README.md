@@ -380,6 +380,65 @@ Run keyframe-aware balance tests after LUT/header update:
 build/simulate_app/test_balance myRobot/scene.xml 240 --key eq_hip_p0525 --print-dt 240
 ```
 
+For disturbance recovery torque measurement (with high wheel/LQR limit for sim):
+
+```bash
+SIM_USE_EKF=0 build/simulate_app/test_balance myRobot/scene.xml \
+  --duration 8 --print-dt 0.5 --key eq_hip_p0525 \
+  --theta-disturb-deg 5 --disturb-time 0.5 --wheel-limit-nm 35
+```
+
+Look for `RECOVERY_SUMMARY` in output (`max_tau`, `max_tau_to_settle`, `settle_delay`).
+
+For speed-target torque measurement (torque needed to reach a commanded speed):
+
+```bash
+SIM_USE_EKF=0 build/simulate_app/test_balance myRobot/scene.xml \
+  --duration 8 --print-dt 0.5 --key eq_hip_p0525 \
+  --target-speed-mps 0.5 --speed-start-time 0.5 --wheel-limit-nm 35
+```
+
+Look for `SPEED_SUMMARY` in output (`max_tau`, `max_tau_to_settle`, `settle_delay`).
+
+For higher-speed commands (e.g. `2.8 m/s`), increase LQR velocity-reference clamp and use a command ramp:
+
+```bash
+SIM_USE_EKF=0 build/simulate_app/test_balance myRobot/scene.xml \
+  --duration 10 --print-dt 0.5 --key eq_hip_p0525 \
+  --target-speed-mps 2.8 --speed-start-time 0.5 \
+  --speed-ramp-mps2 0.8 --lqr-v-ref-limit 3.0 --wheel-limit-nm 35
+```
+
+To sweep all LUT hip poses and report global max torque:
+
+```bash
+python3 tools/torque_sweep.py \
+  --duration 8 \
+  --theta-disturb-deg 5 \
+  --disturb-time 0.5 \
+  --wheel-limit-nm 35 \
+  --csv-out linearize_out/torque_sweep_results.csv
+```
+
+To sweep hip poses and find the one that stabilizes at the highest commanded speed:
+
+```bash
+python3 tools/speed_pose_sweep.py \
+  --speed-min 0.5 \
+  --speed-max 3.0 \
+  --speed-step 0.25 \
+  --duration 10 \
+  --speed-ramp-mps2 0.8 \
+  --post-settle-hold 2.0 \
+  --wheel-limit-nm 35 \
+  --lqr-v-ref-limit 3.2 \
+  --break-on-first-unstable \
+  --run-csv linearize_out/speed_pose_sweep_runs.csv \
+  --key-csv linearize_out/speed_pose_sweep_key_summary.csv
+```
+
+Look for `BEST_POSE` in output and `max_stable_target_speed_mps` in the per-key CSV.
+
 For interactive `simulate_mc`, environment flags, and the current StateEstimator
 workaround, see [`simulate_app/README.md`](simulate_app/README.md).
 
